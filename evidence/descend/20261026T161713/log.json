@@ -1,0 +1,68 @@
+[
+ {
+  "phase": "calibrate",
+  "tip_cam": [
+   4.15,
+   24.94,
+   236.11
+  ],
+  "fresh": [
+   4.5,
+   24.84,
+   235.69
+  ],
+  "miss": 0.23,
+  "height": 74.66,
+  "ink": 2,
+  "t": 1793027849.59
+ },
+ {
+  "phase": "start",
+  "pulses": {
+   "1": 501,
+   "2": 416,
+   "3": 238,
+   "4": 269,
+   "5": 502,
+   "10": 657
+  },
+  "tip": [
+   27.00397361640069,
+   31.470714301758676,
+   74.26230053197395
+  ],
+  "error_xy": [
+   8.296026383599308,
+   -23.170714301758675
+  ],
+  "t": 1793027852.03
+ },
+ {
+  "phase": "measure-failed",
+  "error": "UGREEN: no dark needle point near the predicted tip",
+  "t": 1793027859.26
+ },
+ {
+  "phase": "measure-failed",
+  "error": "UGREEN: no dark needle point near the predicted tip",
+  "t": 1793027861.59
+ },
+ {
+  "phase": "abort",
+  "error": "RuntimeError('two measurements in a row failed')",
+  "t": 1793027861.59
+ },
+ {
+  "phase": "lift",
+  "reason": "abort",
+  "pulses": {
+   "1": 497,
+   "2": 423,
+   "3": 235,
+   "4": 269,
+   "5": 502,
+   "10": 657
+  },
+  "t": 1793027863.83
+ }
+]
