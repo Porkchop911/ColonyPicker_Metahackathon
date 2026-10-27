@@ -61,6 +61,53 @@ For pan (1), elbow (3), wrist (4), one at a time:
 Expect deadband 3-5 and backlash ~5 pulses (handover). Put the numbers in a table in this file and in
 `aim_touch.py` as `DEADBAND`, `BACKLASH` and a re-seeded `J0`.
 
+## Step 1b — fast first move from the URDF model (`tools/coarse_aim.py`)
+
+The robot stack (Porkchop911/dozorin-private) has a URDF of the arm (`ros2_ws/src/hwr_description/urdf/hwr.urdf`,
+frames from the vendor CAD) and FK/IK built on it (`hwr_core/arm/kinematics.py`: pulses <-> joint angles,
+joints 2-4 flipped, 0.24 deg/pulse; tool and camera pose on link4). Both are vendored here unchanged:
+`robot/hwr.urdf`, `tools/hwr_kinematics.py`.
+
+**What the model is good for: getting almost there in one move.** The coordinate space is already
+defined (the sheet frame); the model turns "target at sheet (x, y)" into pulses directly instead of
+creeping there in 3-5 mm steps:
+
+1. One arm frame: grid PnP gives the camera in the sheet frame; the model gives the same camera in
+   base_link at the commanded pulses. Together: base_link <-> sheet.
+2. The needle tip is rigid to the camera (LAM mm along the tip pixel's ray), so the model carries it
+   to any pose. No assumption about how the needle sits in the gripper.
+3. Damped Gauss-Newton on the model solves pan / elbow / wrist (shoulder held: servo 2 sags) for the
+   tip at HOVER (15 mm) above the target. One commanded move, then `aim_touch.py` from there.
+
+Checks built in: the sheet must come out flat in base_link (tilt <= 5 deg, else the pose passed in,
+the model or the camera axes are wrong); the solve must reach the goal (<= 1 mm in the model, else
+add the shoulder with `--joints 1 2 3 4`); no joint jumps more than 150 pulses. After `--go` the
+real miss is measured from the images only (ink marks matched across the two frames), never through
+the model, so the log gives the model's true error.
+
+    python tools/coarse_aim.py --out DIR [--pose '{"1":497,"2":423,...}'] [--dot U V | --sheet X Y]   # plan
+    python tools/coarse_aim.py --out DIR ... --go                                                    # move + measure
+
+`--pose` must be the **commanded** pose the arm is at (default: the start pose), not read-back.
+
+**What it is not good for: the last millimetre.** The robot repo's own record (plan/16, cube
+stacking with this model): placements "mostly <= 1 cm" and only after hand-fitted trims, side biases
+of +5 mm on the floor and about -9 mm one level up, radial overshoot 0.76 mm per degree of tilt. On
+top of that come servo deadband and backlash, and the gap between the CAD frames and this arm. So
+expect the coarse move to land about 5-10 mm off; the closed camera loop (Steps 2-4) is still what
+puts the needle on the dot. Model for the coarse move, camera for the final millimetre: the same split
+as Logan et al. 2026 (learned IK to ~1 mm, then verification).
+
+Offline check (synthetic rig, sheet 40 mm below the start-pose tip): the solve reaches goals within
++-15-25 mm of the start in < 0.05 mm (model), with pan / elbow / wrist jumps up to ~150 pulses; goals
+40 mm further out need the shoulder (residual 16 mm without it, 0.03 mm with it).
+
+Next, once the coarse move is measured on the rig:
+- log `model_miss_mm` over 5 dots; a steady part of it is a trim (as in plan/16), the rest is noise;
+- seed `aim_touch.py`'s Jacobian per pose from the model (finite differences as in `solve`) instead
+  of the fixed `J0`, which was probed at one pose. The model gives about 1.1 mm per pan pulse near
+  the start pose against 2.95 in `J0`: check which one the rig agrees with (Step 1).
+
 ## Step 2 — code changes in `tools/aim_touch.py`
 
 a. **Commanded pose only.** Start `cmd` from the known start pose (or the teleop end pose passed on the

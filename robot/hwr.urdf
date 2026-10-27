@@ -1,0 +1,201 @@
+<?xml version="1.0"?>
+<!--
+  Our URDF for the ROSOrin Mecanum Pro. Frame translations taken from the
+  vendor CAD export (clean-room geometry facts, re-verified in
+  plan/90-clean-room-reference.md); axes cleaned of the ~0.5 deg
+  (0.0087 rad) CAD-export tilt the vendor files carry on joint1/imu.
+  Visuals are simple primitives - frames matter, meshes don't.
+  Key facts: lidar mounted 180 deg rotated (yaw pi); camera rides arm link4
+  (eye-in-hand); arm joints all +/-2.09 rad; gripper = bus servo id 10.
+-->
+<robot name="hwr_rosorin_pro">
+
+  <material name="body"><color rgba="0.3 0.35 0.4 1"/></material>
+  <material name="dark"><color rgba="0.12 0.12 0.12 1"/></material>
+  <material name="accent"><color rgba="0.1 0.55 0.35 1"/></material>
+
+  <!-- ============================== base ============================== -->
+  <link name="base_footprint"/>
+
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0.025" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="-0.02 0 0.05" rpy="0 0 0"/>
+      <geometry><box size="0.24 0.17 0.09"/></geometry>
+      <material name="body"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.02 0 0.05" rpy="0 0 0"/>
+      <geometry><box size="0.26 0.20 0.10"/></geometry>
+    </collision>
+  </link>
+
+  <!-- wheels: fixed visuals at the true contact geometry (no wheel joints -
+       the STM32 owns the wheel loop; wheelbase 0.17706, track 0.17165, r 0.04) -->
+  <link name="wheel_fl_link">
+    <visual><origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+      <geometry><cylinder radius="0.04" length="0.03"/></geometry><material name="dark"/></visual>
+  </link>
+  <joint name="wheel_fl_joint" type="fixed">
+    <parent link="base_link"/><child link="wheel_fl_link"/>
+    <origin xyz="0.08853 0.085825 0.015" rpy="0 0 0"/>
+  </joint>
+  <link name="wheel_rl_link">
+    <visual><origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+      <geometry><cylinder radius="0.04" length="0.03"/></geometry><material name="dark"/></visual>
+  </link>
+  <joint name="wheel_rl_joint" type="fixed">
+    <parent link="base_link"/><child link="wheel_rl_link"/>
+    <origin xyz="-0.08853 0.085825 0.015" rpy="0 0 0"/>
+  </joint>
+  <link name="wheel_fr_link">
+    <visual><origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+      <geometry><cylinder radius="0.04" length="0.03"/></geometry><material name="dark"/></visual>
+  </link>
+  <joint name="wheel_fr_joint" type="fixed">
+    <parent link="base_link"/><child link="wheel_fr_link"/>
+    <origin xyz="0.08853 -0.085825 0.015" rpy="0 0 0"/>
+  </joint>
+  <link name="wheel_rr_link">
+    <visual><origin xyz="0 0 0" rpy="1.5707963 0 0"/>
+      <geometry><cylinder radius="0.04" length="0.03"/></geometry><material name="dark"/></visual>
+  </link>
+  <joint name="wheel_rr_joint" type="fixed">
+    <parent link="base_link"/><child link="wheel_rr_link"/>
+    <origin xyz="-0.08853 -0.085825 0.015" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================== sensors ============================== -->
+  <!-- lidar: physically mounted 180 deg rotated - the yaw pi is REAL -->
+  <link name="lidar_frame">
+    <visual>
+      <origin xyz="0 0 -0.01" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.033" length="0.035"/></geometry>
+      <material name="dark"/>
+    </visual>
+  </link>
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_frame"/>
+    <origin xyz="0.048156 0 0.106748" rpy="0 0 3.1415926535897931"/>
+  </joint>
+
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="-0.027258 0 0.048046" rpy="0 0 1.5707963267948966"/>
+  </joint>
+
+  <!-- ============================== arm ============================== -->
+  <!-- 5 bus servos (ids 1..5); pulses 0-1000 = 0-240 deg, 500 = 0 rad here -->
+  <link name="link1">
+    <visual><origin xyz="0 0 0.015" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.025" length="0.03"/></geometry><material name="accent"/></visual>
+  </link>
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/><child link="link1"/>
+    <origin xyz="0.04662 0 0.16044" rpy="0 0 0"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-2.09" upper="2.09" effort="10" velocity="6"/>
+  </joint>
+
+  <link name="link2">
+    <visual><origin xyz="0 0 0.0425" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.03 0.085"/></geometry><material name="body"/></visual>
+  </link>
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/><child link="link2"/>
+    <origin xyz="0 0.018766 0.030345" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.09" upper="2.09" effort="10" velocity="6"/>
+  </joint>
+
+  <link name="link3">
+    <visual><origin xyz="0 0 0.0425" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.03 0.085"/></geometry><material name="body"/></visual>
+  </link>
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/><child link="link3"/>
+    <origin xyz="0.00025563 0.00074282 0.08513" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.09" upper="2.09" effort="10" velocity="6"/>
+  </joint>
+
+  <link name="link4">
+    <visual><origin xyz="0 0 0.028" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.03 0.056"/></geometry><material name="body"/></visual>
+  </link>
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/><child link="link4"/>
+    <origin xyz="-0.00056892 0.00074297 0.085147" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.09" upper="2.09" effort="10" velocity="6"/>
+  </joint>
+
+  <link name="link5">
+    <visual><origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.015" length="0.01"/></geometry><material name="accent"/></visual>
+  </link>
+  <joint name="joint5" type="revolute">
+    <parent link="link4"/><child link="link5"/>
+    <origin xyz="-0.0010116 -0.018014 0.05577" rpy="0 0 0"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-2.09" upper="2.09" effort="10" velocity="6"/>
+  </joint>
+
+  <!-- gripper (bus servo id 10 - fixed in TF, actuated on the bus) -->
+  <link name="gripper_link">
+    <visual><origin xyz="0.02 0 -0.015" rpy="0 0 0"/>
+      <geometry><box size="0.05 0.04 0.03"/></geometry><material name="dark"/></visual>
+  </link>
+  <joint name="gripper_joint" type="fixed">
+    <parent link="link5"/><child link="gripper_link"/>
+    <origin xyz="0 0 0.0030019" rpy="-3.1415926 -1.5681 3.1415926"/>
+  </joint>
+
+  <link name="end_effector_link"/>
+  <joint name="end_effector_joint" type="fixed">
+    <parent link="link5"/><child link="end_effector_link"/>
+    <origin xyz="0 0 0.08" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================== camera (on link4, eye-in-hand) ============================== -->
+  <link name="camera_link0"/>
+  <joint name="camera_connect_joint" type="fixed">
+    <parent link="link4"/><child link="camera_link0"/>
+    <origin xyz="-0.036369 -0.0181 0.046638" rpy="-1.5621 -1.5621 1.5708"/>
+  </joint>
+
+  <link name="camera_link">
+    <visual><origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.02 0.06 0.02"/></geometry><material name="dark"/></visual>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="camera_link0"/><child link="camera_link"/>
+    <origin xyz="0.022511 -0.0010257 0.0051917" rpy="0 0 0"/>
+  </joint>
+
+  <link name="depth_cam_frame"/>
+  <joint name="depth_cam_joint" type="fixed">
+    <parent link="camera_link"/><child link="depth_cam_frame"/>
+    <!-- ROS optical axes: +Z forward, +X right, +Y down.  The positive roll
+         is essential: the former negative roll pointed optical +Z toward
+         base -X, causing every visible depth point to fail the forward gate. -->
+    <origin xyz="0 0 0" rpy="1.5707963267948966 0 -1.5707963267948966"/>
+  </joint>
+
+  <!-- Frame name emitted by the closed Aurora driver; equivalent to our
+       depth optical frame so TF consumers can use either spelling. -->
+  <link name="depth_camera_link"/>
+  <joint name="depth_camera_alias_joint" type="fixed">
+    <parent link="depth_cam_frame"/><child link="depth_camera_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+</robot>
