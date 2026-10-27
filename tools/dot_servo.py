@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tip_motion as tm  # noqa: E402
 import tip_triangulate as tt  # noqa: E402
 from rig_io import Camera  # noqa: E402
-from tip_descend import move, read  # noqa: E402
+from tip_descend import POSE_HELP, commanded, move, read  # noqa: E402
 
 JOINTS = (1, 2, 3)
 PROBE = 5
@@ -124,6 +124,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--near", type=float, nargs=2, required=True, help="UGREEN tip guess px")
     ap.add_argument("--no-touch", action="store_true")
+    ap.add_argument("--pose", type=int, nargs=6, help=POSE_HELP)
     args = ap.parse_args()
     out = Path("evidence/dot_servo") / time.strftime("%Y%m%dT%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
@@ -153,11 +154,11 @@ def main() -> None:
         return np.array([r["err"][0], r["err"][1], r["height"]])
 
     def lift(reason: str) -> None:
-        now = read()
+        now = commanded()
         move({k: now[k] + v for k, v in LIFT.items()}, ms=1500)
         note(phase="lift", reason=reason, pulses=read())
 
-    pose = read()
+    pose = commanded(args.pose)
     try:
         r = measure()
         note(phase="start", pulses=pose, height=r["height"], err=r["err"], fit=r["fit_mm"], dot_px=r["dot_px"],
@@ -194,7 +195,8 @@ def main() -> None:
             if phase != "touch" and predicted[2] < goal_h - 0.5:
                 dq = np.round(dq * max(0.0, (s[2] - goal_h) / max(s[2] - predicted[2], 1e-9)))
                 predicted = s + jac @ dq
-            pose = move({k: pose[k] + int(d) for k, d in zip(JOINTS, dq)})
+            pose = {**pose, **{k: pose[k] + int(d) for k, d in zip(JOINTS, dq)}}
+            move(pose)
             r = measure()
             new = state(r)
             note(phase=phase, step=step, dq=dq, height=new[2], predicted_h=predicted[2], err=new[:2],

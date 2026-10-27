@@ -30,6 +30,23 @@ and where the needle actually hit (from the contact frame or the paper). Sort ea
 
 Write the bucket counts down; they tell you which fixes matter first.
 
+### Step 0 results (2026-10-27 logs: 8 aim_touch, 17 arm_touch, 8 teleop runs)
+
+| Bucket | Count | Evidence |
+|---|---|---|
+| Target or dot pattern lost (run aborts) | aim 3/8, arm_touch 11/17 | `target dot lost/missing`, `dot pattern lost: 2 of 9` |
+| Model says aligned, needle is far off | aim 2 (100850, 101643) | 100850: log err 0.5 mm at contact, contact frame shows the tip ~45 px (several grid squares) right of the target dot; the target had become a prediction. 101643: push-stop 17 mm off |
+| Arm sinks with no height command | teleop 102723 | pan/roll ±2 moves dropped the tip 4-6 mm each, 45 mm in 10 commands: read-back re-sent (fixed by Step 2a) |
+| Backlash | teleop 103743, 104143 | first 5-pulse click after a reversal: 0 moved, no image motion; the next clicks move 4-5 |
+| Deadband | teleop 102723 | 2-pulse pan steps: 0 moved, every time |
+| Shoulder (2) sticks then jumps | teleop 103132 | +5 x3 nothing, then 15-20 mm height in one click |
+| Unseen final descent drifts | not measurable | aim logs before `seen` was logged; 100850 descend steps show moved 0 for 5 steps, then a 1.6 mm jump |
+
+Order of fixes this gives: **2e (lock the target identity) first**, since most runs died or went wrong on it; then
+2c/2d (deadband, backlash, fixed final direction). Step 1 can reuse the teleop logs above as a first estimate,
+at ~60 mm height, per 5 pulses: wrist 4 -> (0.5, 6.3-7.0) mm target, +2.2-2.6 mm height; elbow 3 -> (0.4-1.0,
+5.2-5.9) mm, +3.5-4.0 mm height; pan 1 -> ~20 mm in x (suspect: tracker jumps). Re-measure near 15 mm.
+
 ## Step 1 — measure the servos from the image (teleop, ~20 min)
 
 Use `tools/teleop.py` at ~15 mm height over a clicked dot. Measure motion from the **target offset in the
@@ -64,6 +81,24 @@ e. **Lock the target identity.** Pick the dot once at ~15 mm; then track it by i
    A jump >= 2 mm = target lost: lift and restart, do not continue on a guess.
 f. **Tighter alignment, Jacobian guard.** Align at SAFE_MM to <= 0.5 mm (not `XY_OK_MM` 2.0). If the
    error grows two steps in a row, reset the Jacobian to the Step 1 seed (Broyden drift guard).
+
+### Step 2 status (2026-10-27): done in code, simulated, not yet on the arm
+
+- 2a-2f are in `aim_touch.py` (`touch()`), plus Step 3 (`--hover`) and Step 4 (push-back / -0.5 mm floor).
+- Changed from the plan: the dots on today's sheet are **14-30 mm apart, not 5 mm**, so the lock window is
+  6 mm, and a frame checks "moved as commanded" first, then "did not move". Pan corrects x, and elbow + wrist
+  correct y and height as a pair (a joint-wise clip of the 3x3 solve made it oscillate).
+- **Limit found: pan moves the landing point ~3 mm per pulse** (J0 2.95; teleop ~4). x can only be aligned to
+  half a pan step, so the x tolerance is `|J[0,0]| * DEADBAND / 2`, not 0.5 mm. In `tools/aim_sim.py` even
+  the ideal plant lands at a median of ~2 mm, 1-3 of 10 within 1 mm. **The <= 1 mm gate is out of reach unless
+  pan does better on the arm** (Step 1: check one pan pulse in mm on the paper; 0.24 deg/pulse should give
+  ~1 mm at a 250 mm reach, so 3 mm is suspicious).
+- **x below one pan step: strafe** (user, 2026-10-27). Closed-loop base strafe pulses (`tip_motion.drive`,
+  measured after each, halved after an overshoot) after alignment at 8 mm and again at 3 mm, where the trim
+  aims off by the x the blind elbow/wrist descent will add. `--no-strafe` = pan only.
+- `tools/aim_sim.py`, deadband 2, backlash 5, J +-10%: pan only miss median 2.7 mm (3/28 <= 1 mm); with strafe
+  1.6 mm (9/28 <= 1 mm); ideal plant 0.8 mm (7/10). Hover alignment is ~0.3 mm; the rest is the blind last 3 mm
+  drifting with Jacobian error, so the Step 1 Jacobian matters most now.
 
 Optional but cheap: run the changed loop first against a small offline simulator (pinhole camera, the
 Step 1 Jacobian, injected deadband, backlash, read-back lag, hidden dot below ~3 mm), so each change is

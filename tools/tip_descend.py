@@ -41,14 +41,49 @@ SURPRISE_MM = 4.0
 LIFT = {2: 40}  # shoulder +40 pulses raises the arm (live: 361 -> 416 lifted the needle off the paper)
 
 
+SERVOS = (1, 2, 3, 4, 5, 10)
+START = (497, 423, 235, 269, 502, 662)  # handover start pose for SERVOS; gripper 662 holds the needle
+POSE_HELP = f"pose to start from (the tool drives there first), servos {SERVOS} (default: the start pose {START})"
+_sent: dict = {}  # what this process last commanded, per servo
+
+
 def read() -> dict:
     return {int(k): v for k, v in servo({"read": True})[0]["pulses"].items()}
 
 
+def commanded(start=None) -> dict:
+    """Pose to build the next command on: what was last sent, else `start` (default START).
+    Never read-back: servo 2 reads ~5 below where it holds and a step late, and re-sending
+    read-back sank the arm ~5 pulses per command (live 2026-10-27). Read-back only vets it."""
+    if not _sent:
+        base = dict(zip(SERVOS, start or START))
+        now = read()
+        off = {k: now[k] - v for k, v in base.items() if abs(now[k] - v) > 35}
+        if off:
+            raise RuntimeError(f"arm is not at {base} (read-back off by {off}): pass --pose")
+        _sent.update(base)
+    return dict(_sent)
+
+
+def send(target: dict, ms: int) -> None:
+    _sent.update({int(k): int(v) for k, v in target.items()})
+    servo({"set": {str(k): int(v) for k, v in target.items()}, "ms": ms})
+
+
+def go_start(start=None, ms: int = 3000) -> dict:
+    """Drive every servo slowly to the start pose (or `start`): the tools begin there. A no-op if already there."""
+    pose = dict(zip(SERVOS, start or START))
+    try:
+        move(pose, ms=ms, settle=1.0)
+    except RuntimeError as error:  # the e-stop latches at boot and drops servo commands silently
+        raise RuntimeError(f'{error}; e-stop latched? ros2 service call /estop std_srvs/srv/SetBool "{{data: false}}"') from error
+    return pose
+
+
 def move(target: dict, ms: int = 700, settle: float = 0.6) -> dict:
-    """Command bus pulses, wait, verify readback within 35 (sag), resend once."""
+    """Command bus pulses, wait, verify readback within 35 (sag), resend once. Returns the read-back."""
     for _ in range(2):
-        servo({"set": {str(k): int(v) for k, v in target.items()}, "ms": ms})
+        send(target, ms)
         time.sleep(ms / 1000 + settle)
         now = read()
         if max(abs(now[k] - v) for k, v in target.items()) <= 35:
@@ -89,6 +124,7 @@ def main() -> None:
     ap.add_argument("--dot", type=float, nargs=2, required=True, help="target dot, UGREEN sheet mm (rig dots)")
     ap.add_argument("--near", type=float, nargs=2, default=(1154, 440), help="UGREEN tip guess px")
     ap.add_argument("--no-touch", action="store_true", help="stop at FINAL_MM above the dot")
+    ap.add_argument("--pose", type=int, nargs=6, help=POSE_HELP)
     ap.add_argument("--tip-cam", type=float, nargs=3, default=None,
                     help="this grasp's tip offset in the arm-camera frame (mean of earlier triangulations)")
     args = ap.parse_args()
@@ -125,11 +161,11 @@ def main() -> None:
         raise RuntimeError("two measurements in a row failed")
 
     def lift(reason: str) -> None:
-        now = read()
+        now = commanded()
         move({k: now[k] + v for k, v in LIFT.items()}, ms=1500)
         note(phase="lift", reason=reason, pulses=read())
 
-    pose = read()
+    pose = commanded(args.pose)
     try:
         s = measure()
         note(phase="start", pulses=pose, tip=s, error_xy=dot - s[:2])
@@ -169,8 +205,8 @@ def main() -> None:
                 dq *= max(0.0, (s[2] - goal_h) / max(s[2] - predicted[2], 1e-9))
                 dq = np.round(dq)
                 predicted = s + jac @ dq
-            target = {k: pose[k] + int(d) for k, d in zip(JOINTS, dq)}
-            pose = move({**{k: pose[k] for k in JOINTS}, **target})
+            pose = {**pose, **{k: pose[k] + int(d) for k, d in zip(JOINTS, dq)}}
+            move(pose)
             new = measure()
             note(phase=phase, step=step, dq=dq, pulses=pose, tip=new, predicted=predicted, error_xy=dot - new[:2])
             if new[2] < predicted[2] - SURPRISE_MM:

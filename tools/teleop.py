@@ -30,8 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import arm_touch as at  # noqa: E402
 import tip_motion as tm  # noqa: E402
 import tip_triangulate as tt  # noqa: E402
-from rig_io import servo  # noqa: E402
-from tip_descend import read  # noqa: E402
+from tip_descend import POSE_HELP, commanded, go_start, read, send  # noqa: E402
 
 KEYS = {"a": (1, -1), "d": (1, 1), "t": (2, 1), "g": (2, -1), "w": (3, 1), "s": (3, -1),
         "r": (4, 1), "f": (4, -1), "q": (5, -1), "e": (5, 1)}
@@ -46,6 +45,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--lam", type=float, default=202.5, help="tip depth along its pixel ray, mm")
+    ap.add_argument("--pose", type=int, nargs=6, help=POSE_HELP)
     args = ap.parse_args()
     out = args.out / time.strftime("%Y%m%dT%H%M%S")
     out.mkdir(parents=True)
@@ -56,6 +56,7 @@ def main() -> None:
         (out / "log.json").write_text(json.dumps(log, indent=1, default=lambda o: np.asarray(o).tolist()))
         print({k: v for k, v in row.items() if k != "dots"}, flush=True)
 
+    note(phase="go-start", pulses=go_start(args.pose))
     note(phase="light", lamps=at.auto_light())
     first = tt.snap_arm(3)
     free, axis = tt.arm_tip(first, with_axis=True)
@@ -130,7 +131,7 @@ def main() -> None:
         cv2.putText(img, "cmd / read", (8, 790), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
         return img
 
-    step, cmd, last_img = 5, dict(read()), first  # 1-2 pulse steps sit inside the servo deadband
+    step, cmd, last_img = 5, commanded(args.pose), first  # 1-2 pulse steps sit inside the servo deadband
     now = dict(cmd)
     m.update(measure(first))
     note(phase="start", tip_px=free, pulses=cmd)
@@ -141,7 +142,7 @@ def main() -> None:
         # change only this joint of the commanded pose: re-sending read-back sank servo 2 by ~5 pulses
         # per command (its read-back sits ~5 below where it holds under load; live 2026-10-27)
         cmd[j] += delta
-        servo({"set": {str(k): v for k, v in cmd.items()}, "ms": 250})
+        send(cmd, ms=250)
         time.sleep(0.35)
         now = read()
         n[0] += 1

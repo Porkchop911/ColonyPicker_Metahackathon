@@ -33,7 +33,7 @@ import hue  # noqa: E402
 import paper_grid as pg  # noqa: E402
 import tip_motion as tm  # noqa: E402
 import tip_triangulate as tt  # noqa: E402
-from tip_descend import move, read  # noqa: E402
+from tip_descend import POSE_HELP, commanded, move, read  # noqa: E402
 
 JOINTS = (1, 2, 3)
 MAX_STEP = 10       # pulses per joint per align move
@@ -130,6 +130,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("evidence/arm_touch"))
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--dot", type=float, nargs=2, help="target dot px (default: nearest beyond the tip)")
+    ap.add_argument("--pose", type=int, nargs=6, help=POSE_HELP)
     args = ap.parse_args()
     out = args.out / time.strftime("%Y%m%dT%H%M%S")
     out.mkdir(parents=True)
@@ -211,7 +212,7 @@ def main() -> None:
         return out_row
 
     def lift(reason: str) -> None:
-        now = read()
+        now = commanded()
         move({k: now[k] + v for k, v in LIFT.items()}, ms=1500)
         note(phase="lift", reason=reason, pulses=read())
 
@@ -227,7 +228,7 @@ def main() -> None:
         contact_px = max(1.5, 4 * float(np.abs(back - np.median(back)).max()))
         note(phase="free-air", tip_free=free, contact_px=contact_px, paper_mm=firsts[-1]["paper_mm"])
         prev = firsts[-1]
-        cmd = dict(pose)  # commanded pulses: sub-deadband steps accumulate here until the servo moves
+        cmd = commanded(args.pose)  # sub-deadband steps accumulate here until the servo moves
         heading = {1: 0, 3: 0}  # last commanded direction per joint, for backlash take-up
         over = 0
         for step in range(args.steps):
