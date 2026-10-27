@@ -78,7 +78,15 @@ class Camera:
         raise RuntimeError("UGREEN stopped delivering frames")
 
 
+def restart_arm_camera() -> None:
+    """Kill the stalled Aurora driver (the platform launch respawns it after 8 s) and reset its USB
+    function. The closed driver stalls every few minutes: topic up, no frames, no kernel error."""
+    subprocess.run(["ssh", ROBOT, "pkill -TERM -f '[a]urora930_node'; sleep 0.5; sudo -n usbreset 3251:1930"],
+                   timeout=30, capture_output=True)
+
+
 _bridge: subprocess.Popen | None = None
+_lock = threading.RLock()  # one SSH session, several threads (teleop: live view + mover)
 
 
 def _line() -> dict:
@@ -90,9 +98,24 @@ def _line() -> dict:
             return json.loads(text)
 
 
+def reset_bridge() -> None:
+    """Drop the bridge session; the next servo() call opens a fresh one. A session that was listening
+    when the camera driver restarted keeps reporting the old frame as stale for good (live 2026-10-27:
+    598 s), while a new session gets frames at once."""
+    global _bridge
+    if _bridge is not None:
+        _bridge.kill()
+        _bridge = None
+
+
 def servo(*commands: dict) -> list[dict]:
     """Send bridge commands ({"set": {id: pulse}, "ms": n}, {"read": true}, {"snap": true}) in
-    order over the one session; raises on any error reply."""
+    order over the one session; raises on any error reply. Thread-safe."""
+    with _lock:
+        return _servo(*commands)
+
+
+def _servo(*commands: dict) -> list[dict]:
     global _bridge
     if _bridge is None or _bridge.poll() is not None:
         _bridge = subprocess.Popen(["ssh", ROBOT, f'zsh -c "{BRIDGE}"'], stdin=subprocess.PIPE,

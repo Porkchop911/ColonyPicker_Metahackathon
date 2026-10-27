@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rig_io import servo  # noqa: E402
+from rig_io import reset_bridge, servo  # noqa: E402
 
 OUT = Path("evidence/view")
 
@@ -30,6 +30,8 @@ def main() -> None:
             reply = {"error": str(error)}
         if "jpeg" not in reply:
             print(f"no frame: {reply}")
+            if "stale" in str(reply):
+                reset_bridge()  # a session that missed a camera driver restart never recovers
             time.sleep(0.5)
             continue
         image = cv2.imdecode(np.frombuffer(base64.b64decode(reply["jpeg"]), np.uint8), cv2.IMREAD_COLOR)

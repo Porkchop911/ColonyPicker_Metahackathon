@@ -45,11 +45,11 @@ def read() -> dict:
     return {int(k): v for k, v in servo({"read": True})[0]["pulses"].items()}
 
 
-def move(target: dict, ms: int = 700) -> dict:
+def move(target: dict, ms: int = 700, settle: float = 0.6) -> dict:
     """Command bus pulses, wait, verify readback within 35 (sag), resend once."""
     for _ in range(2):
         servo({"set": {str(k): int(v) for k, v in target.items()}, "ms": ms})
-        time.sleep(ms / 1000 + 0.6)
+        time.sleep(ms / 1000 + settle)
         now = read()
         if max(abs(now[k] - v) for k, v in target.items()) <= 35:
             return now

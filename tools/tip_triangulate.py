@@ -30,7 +30,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import paper_grid as pg  # noqa: E402
-from rig_io import Camera, servo  # noqa: E402
+from rig_io import Camera, reset_bridge, restart_arm_camera, servo  # noqa: E402
 
 # arm colour camera intrinsics, read from the robot camera_info topic on 2026-10-26: 640x400
 ARM_K = np.array([[418.6042, 0.0, 324.1325], [0.0, 419.4625, 184.2325], [0.0, 0.0, 1.0]])
@@ -154,11 +154,16 @@ def arm_candidates(image: np.ndarray, rig: dict) -> tuple[list[tuple[np.ndarray,
     return out, int(len(inliers))
 
 
-def _needle_blob(image: np.ndarray) -> np.ndarray:
-    """Fingers + needle in the arm image: the dark blob at the bottom centre (boolean mask)."""
-    gray = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (3, 3), 0)
-    count, labels, stats, _ = cv2.connectedComponentsWithStats((gray < 120).astype(np.uint8))
-    h, w = gray.shape
+def _needle_blob(image: np.ndarray, frac: float = 0.8) -> np.ndarray:
+    """Fingers + needle in the arm image: the dark blob at the bottom centre (boolean mask). Blue
+    channel, relative threshold: the blue ruling is bright in blue, so it never joins the needle."""
+    b = cv2.GaussianBlur(image[:, :, 0], (3, 3), 0)
+    h, w = b.shape
+    paper = np.median(b[h // 2:, w // 4:3 * w // 4])  # around the needle: the sheet, not the floor beyond it
+    dark = (b < frac * paper).astype(np.uint8)
+    dark[:, :int(w * 0.3)] = 0  # fingers and needle sit in the middle; the floor at the edges joined them
+    dark[:, int(w * 0.75):] = 0
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(dark)
     finger = labels[h - 3, int(w * 0.4):int(w * 0.6)]
     if not (finger > 0).any():
         raise RuntimeError("arm camera: no fingers/needle at the bottom centre")
@@ -166,28 +171,79 @@ def _needle_blob(image: np.ndarray) -> np.ndarray:
 
 
 def arm_tip(image: np.ndarray, with_axis: bool = False):
-    """Sub-pixel needle tip in the (blurred) arm image: fit the needle axis, then find where the
-    intensity along the axis crosses halfway from needle to paper. `with_axis` also returns the unit
-    image direction from the fingers toward the tip."""
-    gray = cv2.GaussianBlur(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (3, 3), 0).astype(np.float32)
-    blob = _needle_blob(image)
+    """Sub-pixel needle tip; see _arm_tip. Lamp glare can pale the steel past the 0.8 mask (live
+    2026-10-27), so looser masks are tried before giving up."""
+    for frac in (0.8, 0.85, 0.9):
+        try:
+            return _arm_tip(image, with_axis, frac)
+        except RuntimeError as error:
+            last = error
+    raise last
+
+
+def _arm_tip(image: np.ndarray, with_axis: bool, frac: float):
+    """Sub-pixel needle tip in the arm image. The needle line is fitted on the thin part of the blob;
+    the last ~70 px toward the tip are lighter (lamp highlights) and drop out of the mask, so the tip
+    is found by walking up that line on local contrast (centre vs +-6 px either side, blue channel):
+    the last half-contrast crossing with no needle in the 6 px beyond. `with_axis` also returns the
+    unit image direction from the fingers toward the tip."""
+    b = cv2.GaussianBlur(image[:, :, 0], (3, 3), 0).astype(np.float32)
+    blob = _needle_blob(image, frac)
     vs, us = np.nonzero(blob)
     top = vs.min()
-    near = (vs < top + 60)  # the thin part of the needle, above the fingers
+    rows = []  # the thin needle only: from the top until the blob widens into the fingers
+    for v in range(top, blob.shape[0]):
+        if blob[v].sum() > 10:
+            break
+        rows.append(v)
+    near = np.isin(vs, rows)
+    if near.sum() < 15:
+        raise RuntimeError("arm camera: needle too short in the mask")
     vx, vy, x0, y0 = cv2.fitLine(np.stack([us[near], vs[near]], 1).astype(np.float32), cv2.DIST_HUBER, 0, 0.01, 0.01).ravel()
     axis = np.array([vx, vy]) * (1 if vy < 0 else -1)  # pointing up the image, toward the tip
-    start = np.array([us[vs == top].mean(), float(top)]) - 12 * axis
-    samples = [cv2.getRectSubPix(gray, (1, 1), tuple((start + k * 0.25 * axis).astype(np.float32)))[0, 0]
-               for k in range(int(24 / 0.25))]
-    samples = np.array(samples)
-    needle, paper = np.median(samples[:12]), np.median(samples[-12:])
-    half = (needle + paper) / 2
-    k = int(np.argmax(samples > half))
-    k = k - (samples[k] - half) / (samples[k] - samples[k - 1]) if k > 0 else 0
-    tip = start + k * 0.25 * axis
+    tip = _walk(b, np.array([x0, y0]) + (top - y0) / axis[1] * axis - 20 * axis, axis)
     if with_axis:
         return (float(tip[0]), float(tip[1])), axis.astype(float)
     return float(tip[0]), float(tip[1])
+
+
+def arm_tip_on_line(image: np.ndarray, tip: tuple, axis) -> tuple[float, float]:
+    """Tip found by the contrast walk alone, along a needle line already measured in free air. The
+    needle is rigid to the camera, so its line holds; near the paper the sheet edge and floor enter
+    the image and joined the finger mask (live 2026-10-27), which this never builds."""
+    b = cv2.GaussianBlur(image[:, :, 0], (3, 3), 0).astype(np.float32)
+    axis = np.asarray(axis, float)
+    found = _walk(b, np.asarray(tip, float) - 18 * axis, axis)  # short: behind it the floor can show
+    return float(found[0]), float(found[1])
+
+
+def _walk(b: np.ndarray, start: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """Walk up the needle line from `start` (on the needle) on local contrast; return the tip."""
+    side = np.array([-axis[1], axis[0]])
+    step = 0.25
+    h, w = b.shape
+
+    def pix(p):
+        return cv2.getRectSubPix(b, (1, 1), tuple(np.float32(p)))[0, 0]
+
+    c = []
+    for k in range(int(170 / step)):
+        p = start + k * step * axis
+        if not (8 <= p[0] < w - 8 and 8 <= p[1] < h - 8):
+            break
+        c.append((pix(p + 6 * side) + pix(p - 6 * side)) / 2 - pix(p))
+    c = np.array(c)
+    on = c > 0.5 * np.median(c[:int(15 / step)])
+    gap = int(6 / step)
+    last = next((i for i in range(len(on)) if on[i] and not on[i + 1:i + 1 + gap].any()), None)
+    if last is None or last + 2 >= len(c):
+        raise RuntimeError("arm camera: needle runs out of the image")
+    half = np.median(c[max(0, last - int(8 / step)):last - int(2 / step)]) / 2
+    k = last + 1
+    while k < len(c) - 1 and c[k] > half:
+        k += 1
+    frac = (c[k - 1] - half) / (c[k - 1] - c[k]) if c[k - 1] != c[k] else 0.0
+    return start + (k - 1 + frac) * step * axis
 
 
 def ugreen_tip(image: np.ndarray, near: tuple[float, float], radius: int = 70,
@@ -240,17 +296,22 @@ def snap_arm(n: int = 6, frozen_s: float = 3.0) -> np.ndarray:
     no move). Live frames never repeat byte for byte (sensor noise), so a repeat is a stale frame."""
     frames, seen = [], set(_last_jpeg)
     deadline = time.monotonic() + frozen_s
+    restarted = False
     while len(frames) < n:
         try:
             reply = servo({"snap": True})[0]
-        except RuntimeError:  # 'no camera frame yet' right after the shell starts
-            time.sleep(0.5)
-            continue
-        jpeg = base64.b64decode(reply["jpeg"])
-        if jpeg in seen:
+            jpeg = base64.b64decode(reply["jpeg"])
+            fresh = jpeg not in seen
+        except RuntimeError:  # 'no camera frame yet' / 'stale camera frame'
+            fresh = False
+        if not fresh:
             if time.monotonic() > deadline:
-                raise RuntimeError(f"arm camera frozen: same frame for > {frozen_s:.0f} s")
-            time.sleep(0.1)
+                if restarted:
+                    raise RuntimeError("arm camera stalled, a driver restart did not bring it back")
+                restart_arm_camera()  # driver stall: restart once, then allow it ~30 s to come back
+                reset_bridge()  # the old session never sees the respawned driver's frames
+                restarted, deadline = True, time.monotonic() + 30.0
+            time.sleep(0.3)
             continue
         seen.add(jpeg)
         deadline = time.monotonic() + frozen_s

@@ -20,6 +20,10 @@ from sam3.model_builder import build_sam3_predictor
 
 
 def load():
+    import contextlib
+    import sam3.model.decoder as decoder
+    # the tracker forces SDPBackend.FLASH_ATTENTION, which Windows torch builds lack ("No available kernel")
+    decoder.sdpa_kernel = lambda *a, **k: contextlib.nullcontext()
     predictor = build_sam3_predictor(version="sam3.1", use_fa3=False, async_loading_frames=False)
     init = predictor.model.init_state
     # upstream start_session passes offload_state_to_cpu, which the 3.1 model's init_state lacks (sam3 f1647e8)

@@ -164,3 +164,20 @@ Next: centre the UGREEN tip search on the start pose for every probe (or widen t
 | `tools/dot_servo.py` | user's approach: hold the dot 6 px past the tip in the arm camera, close in, UGREEN height readouts. Read-only checks only, never moved. Open: which UGREEN dot is the target is ambiguous (two unknowns fit every dot exactly; heights 43/63/152 mm). Planned fix (written, not applied): add the arm camera's own grid height as a third constraint so the leftover miss picks the dot |
 
 Stop: battery empty. Arm at {1:502, 2:412, 3:235, 4:268, 5:503, 10:658}; it goes limp when power drops.
+
+## Session 2026-10-27: first paper touches, arm camera only
+
+| Item | Result |
+|---|---|
+| Touch-off | `arm_touch.py` / plunge: elbow steps down, stop when the paper pushes the tip back. Contact confirmed visually (shadow meets tip). Tip depth along its pixel ray **~202.5 mm** (h = 0 at the contact frame); shadow merge reads ~1 mm before contact |
+| Aimed touch | `aim_touch.py`: landing point = tip pixel ray ∩ paper (depth-free), target snapped to dots, pan/elbow/wrist. Touches achieved; landing on the dot not yet confirmed (user: "quite off from any dot" before the depth-free landing point) |
+| Teleop | `teleop.py`: live arm view, click target (template-tracked), servo panel with steps, background mover, every step logged |
+| Servo 2 "sag" | was mostly our bug: re-commanding read-back sinks it ~5 pulses per command (read-back sits ~5 below the held position under load, and lags a step). Commands now build on the commanded pose (teleop); `aim_touch`/`arm_touch` lifts still re-base on read-back: fix next |
+| Servos | deadband / backlash: 1-3 pulse steps often do nothing, then jump; reversal swallows ~5 pulses; shoulder upward under load sticks ~15 then jumps |
+| Arm camera driver | stalls every few minutes (topic up, no frames): tools restart it (SIGTERM + usbreset) and reopen the bridge session |
+| Tip finder | blue channel, paper-relative mask in the central band, contrast walk; near the paper: walk along the fixed free-air needle line (`arm_tip_on_line`) |
+| SAM 3.1 | point-prompt tracking loses a 12 px dot after frame 0; flash-attention forced in the tracker (patched out at load) |
+
+Next: fix read-back re-basing in the lifts; repeat aimed touches and confirm the landing against the dot (lift, compare frames); teleop template tracker can lock onto the needle: block matches along the needle line.
+
+Stop: charging. Arm parked at {1:500, 2:404, 3:233, 4:265, 5:502, 10:662}; it goes limp when power drops.
