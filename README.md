@@ -10,8 +10,10 @@ steel needle onto each one with two cameras, and photograph the plate to confirm
 camera driver, HTTP gateway (`/drive`), environment script — written before the event, used here as
 the platform this code runs on. Also an earlier needle-touch prototype and a colony-picker step-test
 plan (2026-10-24); their lessons are cited in comments, their code is not included.
+Exception, vendored unchanged: the arm's URDF (`robot/hwr.urdf`) and its FK/IK
+(`tools/hwr_kinematics.py`, from `hwr_core/arm/kinematics.py`), used by `tools/coarse_aim.py`.
 
-**Built during the event (everything in this repo):** camera calibration on the 5 mm grid sheet,
+**Built during the event (everything else in this repo):** camera calibration on the 5 mm grid sheet,
 two-camera and robot-motion triangulation of the needle tip, closed-loop strafing, Hue lighting
 control, SAM 3.1 detection, the dot-servo descent, the PC/robot I/O (`tools/rig_io.py`,
 `robot/servo_bridge.py`), plan and evidence.
@@ -39,6 +41,8 @@ PyTorch, OpenCV, NumPy, Philips Hue local API.
 | `tools/paper_grid.py` | 5 mm ruling -> numbered crossings -> camera intrinsics/pose in the sheet frame |
 | `tools/tip_triangulate.py` | tip in 3D from both cameras; arm/UGREEN tip detection; stale-frame-proof arm snapshots |
 | `tools/tip_motion.py` | tip in 3D from robot strafes (UGREEN rays + arm-measured motion incl. yaw); always returns to the start |
+| `tools/coarse_aim.py` | fast first move: target in sheet mm -> pulses via the URDF arm model, tip 15 mm above it; measures the real miss |
+| `tools/hwr_kinematics.py`, `robot/hwr.urdf` | arm FK/IK and URDF, vendored unchanged from the robot stack (see below) |
 | `tools/tip_descend.py` | closed-loop descent onto a dot from measured tip positions |
 | `tools/dot_servo.py` | lock a dot in the arm camera, close in, UGREEN height readouts (in progress) |
 | `tools/sam_detect.py`, `tools/sam_live.py` | SAM 3.1 text-prompted segmentation, one image / live UGREEN stream |
