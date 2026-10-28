@@ -1,0 +1,46 @@
+[
+ {
+  "t": 1793187687.56,
+  "phase": "light",
+  "lamps": [
+   120,
+   120
+  ]
+ },
+ {
+  "t": 1793187720.66,
+  "phase": "tip-depth-failed",
+  "how": "cube",
+  "error": "UGREEN: nothing long and thin moved on the sheet"
+ },
+ {
+  "t": 1793187740.66,
+  "phase": "dots-filled",
+  "from_file": 1
+ },
+ {
+  "t": 1793187741.5,
+  "phase": "cube-carried",
+  "cube_mm": [
+   95.60850040541611,
+   -213.7172763635711
+  ]
+ },
+ {
+  "t": 1793187741.95,
+  "phase": "abort",
+  "error": "RuntimeError('SAM 3.1 found no red dot on the notebook in the UGREEN')"
+ },
+ {
+  "t": 1793187744.19,
+  "phase": "lift",
+  "readback": {
+   "1": 498,
+   "2": 417,
+   "3": 179,
+   "4": 266,
+   "5": 502,
+   "10": 653
+  }
+ }
+]

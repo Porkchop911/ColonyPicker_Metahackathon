@@ -1,0 +1,46 @@
+[
+ {
+  "t": 1793186890.09,
+  "phase": "light",
+  "lamps": [
+   254,
+   0
+  ]
+ },
+ {
+  "t": 1793186919.32,
+  "phase": "tip-depth-failed",
+  "how": "cube",
+  "error": "UGREEN: nothing long and thin moved on the sheet"
+ },
+ {
+  "t": 1793186940.15,
+  "phase": "dots-filled",
+  "from_file": 1
+ },
+ {
+  "t": 1793186940.98,
+  "phase": "cube-carried",
+  "cube_mm": [
+   95.65494490717563,
+   -135.4562887902664
+  ]
+ },
+ {
+  "t": 1793186940.99,
+  "phase": "abort",
+  "error": "IndexError('index 2 is out of bounds for axis 0 with size 2')"
+ },
+ {
+  "t": 1793186943.21,
+  "phase": "lift",
+  "readback": {
+   "1": 499,
+   "2": 412,
+   "3": 180,
+   "4": 266,
+   "5": 502,
+   "10": 654
+  }
+ }
+]

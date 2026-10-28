@@ -1,13 +1,21 @@
 # Root cause analysis: why the needle does not reliably touch a chosen dot (2026-10-27)
 
+Revised 2026-10-28 after `docs/critique_2026-10-28.md` and `docs/critique_rca_plan_2026-10-28.md`.
+The ranking below is judgement, not an ablation: root cause 1 explains why the few contacts were false
+successes; most runs died earlier (root causes 4 and 5); early touchdown itself is root cause 2,
+which root cause 1 hid. No claim below ~2 mm is outside measurement noise (`MATCH_MM` 3 mm, arm-grid
+jitter 2-3 mm); the user's "5 mm short and dragged" is the strongest, model-free datum.
+
 ## 1. What was asked, what happened
 
 **Goal:** the needle tip makes its *first* contact with the paper on a chosen black ink dot on the
 notebook (about 2-3 mm across), automatically, twice in a row.
 
-**Outcome after one day:** about 95 recorded runs across four tools (`aim_touch.py`, `jab.py`,
+**Outcome after one day:** 107 runs with a log across three tools (`aim_touch.py`, `jab.py`,
 `model_jab.py`, plus teleop sessions), 14 of them ended in a contact with the paper, and **none is a
-verified clean first contact on the dot.**
+verified clean first contact on the dot.** The failure buckets below cover 70 of the 107; the
+rest were learning runs, user stops and aborts without a logged cause. The logs are in the session
+scratchpad, not in the repo, so these counts cannot be audited (fixed from 2026-10-28: `evidence/`).
 
 | Tool | Runs with a log | Contact | Main failure |
 |---|---|---|---|
@@ -30,8 +38,9 @@ The causes below are ranked by how much they explain. Each has the evidence from
 |---|---|---|---|
 | `aim_touch` | elbow/wrist steps down, "blind below 3 mm" by design | no: the dot hides under the tip in the arm camera | landed 10-25 mm off, or pressed |
 | `jab.py` live | one fluid move (shoulder -30, elbow +14, wrist +30) | no | 4.4 mm off; one 16 mm forward instead of 10 |
-| `model_jab` jab | one fluid model move, then 8 waypoints | no | 3 mm short; 0.4-1.1 mm "miss" at the end but touched down ~5 mm early and dragged |
+| `model_jab` jab (removed 2026-10-28) | one fluid model move, then 8 waypoints, planned to end `--press` 0.3 mm **into** the paper | no | 3 mm short; 0.4-1.1 mm "miss" at the end but touched down ~5 mm early and dragged: a move planned to end below the surface drags by construction after any early touchdown |
 | `model_jab` angled needle | 8 waypoints | no | 9 mm short, pressed 6.7 mm into the paper |
+| `model_jab` wrist arc (current code, not yet run to contact) | wrist steps of 3 pulses, arm-camera height after each, stop at 0.3 mm | arm-camera model height at ~1 Hz, dot hidden; no contact signal | robot shut down before contact |
 
 Why it is blind:
 
@@ -69,9 +78,10 @@ Why it matters for the jab: a fluid move that is a straight line in the model is
 because the shoulder and elbow fall behind (sag, lag) and the pan sticks. The tip comes down before it
 goes forward, touches the paper short, and the rest of the move drags it.
 
-Contributing: the **gripper does not hold the needle rigidly** under contact. The tip depth was
+A primary term, not a footnote: the **gripper does not hold the needle rigidly** under contact. The tip depth was
 202.5 mm in the morning, 206 mm after the gripper reopened, 188 mm after the angled re-mount; each hard
-press can shift it again, and every height and every model move depend on it.
+press can shift it again. Height is read along the tip ray at depth `lam`, so an 18 mm `lam` error
+shifts the whole descent, more than any single servo error.
 
 ## 4. Root cause 3: the targets were where the arm is weakest
 
@@ -88,9 +98,9 @@ Even before contact, a large share of runs died on sensing, not on motion:
 | Failure | Runs | Cause |
 |---|---|---|
 | Target lost by the arm camera | 6 (`aim_touch`) + 3 (`jab.py` probes) | prediction window vs. 3-25 mm motion errors (root cause 2) |
-| UGREEN lost tip or dot | 8 | needle found only as "what moved"; small moves invisible; dusk; outliers 35-130 mm |
+| UGREEN lost tip or dot | 12 | needle found only as "what moved"; small moves invisible; dusk; outliers 35-130 mm |
 | Two-camera tie failed | 5 | SAM finds no dots in the arm view above ~30 mm; the cube leaves the view at the tie height; the cube centre is 17 mm off from the oblique view |
-| Grid pose failed / wrong | 4 + one at -96 mm | little grid in view after big moves; one pose fit put the tip 96 mm under the paper |
+| Grid pose failed / wrong | 2 + one at -96 mm | little grid in view after big moves; one pose fit put the tip 96 mm under the paper |
 | Target carried wrongly between frames | 1 visible (50 mm jump) | `lattice_offset` matched the wrong mark pattern |
 | Wrong object as "black dot" | 1 | a mark on the white UGREEN box passed the hand-made dot filter; the needle was driven to the box |
 
@@ -136,9 +146,10 @@ untested code changes made most runs fail before they got there.
 
 ## 9. What would fix it (in order)
 
-1. **Measure first contact, not the end pose.** A contact signal independent of the cameras: a
-   conductive path (needle wired, a thin foil under the sheet, contact closes the circuit), or servo
-   current/load read at high rate during the descent. Stop on the first contact and record *where* it
+1. **Measure first contact, not the end pose.** A ground truth independent of the cameras: an inked
+   tip leaves a mark at first contact and a streak on a drag (a foil under the sheet cannot close a
+   circuit through the paper). A stop signal: the tip stops in the UGREEN stream while the command
+   continues, or servo read-back lag. Stop on the first contact and record *where* it
    happened.
 2. **Watch the last centimetre.** Put the UGREEN (or a second cheap camera) low and to the side of the
    target, so the tip, its shadow and the dot are visible during the descent. Descend in small measured
