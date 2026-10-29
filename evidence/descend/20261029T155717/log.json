@@ -1,0 +1,95 @@
+[
+ {
+  "t": 1793285837.68,
+  "phase": "args",
+  "argv": "--out D:\\robot\\ColonyPicker_Metahackathon\\evidence\\descend --lam 190 --jab --stop-file D:\\robot\\ColonyPicker_Metahackathon\\evidence\\descend\\stop.flag --dot 720.4 335.7",
+  "wait_s": {}
+ },
+ {
+  "t": 1793285857.33,
+  "phase": "light",
+  "lamps": [
+   0,
+   254
+  ],
+  "wait_s": {}
+ },
+ {
+  "t": 1793285878.98,
+  "phase": "pose0",
+  "pose": {
+   "1": 425,
+   "2": 343,
+   "3": 302,
+   "4": 246,
+   "5": 503,
+   "10": 655
+  },
+  "wait_s": {
+   "snap": 0.5,
+   "sam": 0.86
+  }
+ },
+ {
+  "t": 1793285898.98,
+  "phase": "tip-depth-failed",
+  "how": "cube",
+  "error": "UGREEN: nothing long and thin moved on the sheet",
+  "wait_s": {
+   "ugreen": 0.89,
+   "sleep": 1.91,
+   "snap": 15.38,
+   "grid": 0.31,
+   "sam": 0.92
+  }
+ },
+ {
+  "t": 1793285901.95,
+  "phase": "dots-filled",
+  "from_file": 2,
+  "wait_s": {
+   "snap": 0.5,
+   "grid": 0.11,
+   "ugreen": 0.44,
+   "sam": 1.64
+  }
+ },
+ {
+  "t": 1793285907.43,
+  "phase": "side-rig",
+  "dots": 6,
+  "rms_px": 2.3433786011060156,
+  "camera_mm": [
+   -206.48251580627533,
+   -80.42954423120752,
+   -134.65363679328183
+  ],
+  "wait_s": {
+   "sam": 2.0,
+   "side": 0.44
+  }
+ },
+ {
+  "t": 1793285908.03,
+  "phase": "abort",
+  "error": "RuntimeError('cameras tied on 1 dot: need 2 (black or red) in the arm view')",
+  "wait_s": {
+   "sam": 0.59
+  }
+ },
+ {
+  "t": 1793285910.27,
+  "phase": "lift",
+  "readback": {
+   "1": 425,
+   "2": 343,
+   "3": 336,
+   "4": 246,
+   "5": 503,
+   "10": 654
+  },
+  "wait_s": {
+   "sleep": 2.2
+  }
+ }
+]

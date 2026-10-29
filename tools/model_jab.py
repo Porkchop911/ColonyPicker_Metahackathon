@@ -26,13 +26,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aim_touch as am  # noqa: E402
+import markers as mk  # noqa: E402
 import arm_touch as at  # noqa: E402
 import paper_grid as pg  # noqa: E402
 import coarse_aim as ca  # noqa: E402
 import tip_motion as tm  # noqa: E402
 import sam_detect as sam  # noqa: E402
 import tip_triangulate as tt  # noqa: E402
-from rig_io import SIDE, Camera  # noqa: E402
+from rig_io import SIDE, SIDE_PAPER, Camera  # noqa: E402
 from tip_motion import drive  # noqa: E402
 from tip_descend import read, send  # noqa: E402
 
@@ -63,13 +64,23 @@ UG_TOL_MM = 1.0           # the UGREEN's landing error accepted
 PRACTICE_H = 4.0          # mm: the practice arc stops this high; the extrapolation to the paper covers the rest
 UG_TOUCH_MAX_MM = 5.0     # unconverged after the rounds: touch only if the last check is within this (it predicts the mark)
 ARC_TILT = 15              # wrist step (model) away from vertical when the arc cannot land (close in, live 2026-10-28)
+MARKER_RMS_MM = 2.0       # a marker tie whose corners disagree by more than this (rms) is not used (the dots decide)
+UG_GAIN_MIN_MM = 1.0      # a UGREEN round from the third on must improve the predicted miss by more than this (noise +-1 mm)
 UG_GAIN = 0.8             # share of the UGREEN landing error applied per round: 0.5 after pan swings on 2026-10-28; on 2026-10-29 roll/pan realised
                           # each fix ~1:1 (6.2->3.3, 4.6->4.6, 2.2->2.2, 1.1->1.2 mm) and 12 mm took 5 rounds at 0.5
 ROLL_REACH_MM = 6.0       # sideways under this is closed by roll, over it by pan: pan sticks, then jumps 13-19 mm
 ROLL_MM = 0.42            # mm sideways per roll pulse: 0.26 before the needle was bent, 0.40-0.45 after (sweep +-40, 2026-10-28); deadband 1-2, backlash ~0.5 mm
+ROLL_DEADBAND = 1.5       # pulses of roll that move nothing (deadband 1-2 above): a step buys this many pulses before travel starts
+ROLL_AIM_MM = 0.6         # roll aims to land this far from the dot (half of SIDE_TOL_MM), not on it: steps sized to zero overshot through zero (rounds 3-6 of 20261029T152609)
+PAN_SIGMA_MM = 4.0        # pan's realised scatter: mm_per_pulse med 1.8, range -0.8..19.5 over 191 logged steps (2026-10-29 logs): a pan step's landing is a lottery at any size
 ROLL_PX_MAX = 20.0        # arm-camera tip pixel shift accepted per roll step (one step read 11 mm sideways, live 2026-10-28)
 ROLL_MAX = 40             # roll pulses from the start pose: the needle's angle in the jaw limits the useful range
 PAN_STEP = 2              # sideways past the strafe budget: small pan steps, never reversing
+REACH_SIDE_MM = 30.0      # a target further sideways than this at the start is strafed to: pan to it turned the arm camera
+                          # half onto the floor and the grid pose failed (70 mm sideways, 3 runs on 2026-10-29); 27 mm panned
+                          # fine, 32 mm (red dot 2, 171651) did not converge in 30 corrections
+REACH_TO_MM = 25.0        # ... until it is this far sideways, the rest by pan as usual
+REACH_STRAFE_S = 3.0      # strafe seconds for that (user, 2026-10-29: if the dot is not reachable it should strafe); undone at the end
 STRAFE_V = 0.05           # m/s base strafe for sideways after the first move (pan ~4 mm/pulse with slack)
 SHOULDER_SLIP = 3         # read-back pulses below its start: the shoulder is giving way
 PLACE_FLOOR_MM = 5.0      # any measured height under this while placing stops the run
@@ -80,6 +91,9 @@ BLACK_GRAY = 80           # arm camera: black ink below this (aim_touch.BLACK_GR
 CONTACT_EXTRA = 3         # wrist pulses past the arm camera's paper height: it read -0.1 mm with the tip still above (live 2026-10-28); each pulse past contact drags the tip ~0.76 mm (red 2 streak, 2026-10-28)
 CONTACT_LAG = 6           # wrist read-back this far behind: backstop only; 2 and 3 fired in the air (live 2026-10-28), the tip standing still decides
 CONTACT_STILL_PX = 1.0    # the UGREEN teal tip moved less than this on 2 running 1-pulse steps: resting on the paper
+TRI_STOP_MM = 0.5         # the descent stops when the tip, triangulated from the overhead and side views, is this high:
+                          # it read 0.08 mm at first contact while the arm camera read 1.25, which went 3 steps on and dragged (2026-10-29)
+TRI_MISS_MM = 3.0         # ... if the two rays pass this close (they missed by 0.4-1.4 mm in the air)
 SIDE_STILL_PX = 1.5       # side view: a 1-pulse wrist step moves the tip ~2.3 px down in the air; touching it went 4, 2, 1 (2026-10-29)
 WRIST_STEP = 3            # pulses per measured wrist step on the final arc
 LIFT_ELBOW = 40
@@ -112,22 +126,43 @@ def match_frames(src: np.ndarray, dst: np.ndarray, cube_src, cube_dst) -> tuple[
     return r, off, n
 
 
-def vote_offset(src: np.ndarray, dst: np.ndarray, r: np.ndarray) -> tuple[np.ndarray, int]:
+def _vote_detail(src: np.ndarray, dst: np.ndarray, r: np.ndarray, off: np.ndarray) -> tuple[np.ndarray, list, list]:
+    """(per-dot residuals, indices of the agreeing src dots, their dst partners) for a candidate offset."""
+    if not len(dst):  # no dots in the arm view (after a big move): nothing agrees; argmin of nothing ended run 171326
+        return np.full(len(src), np.inf), [], []
+    m = np.linalg.norm((src @ r.T + off)[:, None] - dst[None], axis=2)
+    near = m.argmin(1)
+    res = np.linalg.norm(src @ r.T + off - dst[near], axis=1)
+    idx = [int(j) for j in np.nonzero(res <= MATCH_MM)[0]]
+    return res, idx, [int(near[j]) for j in idx]
+
+
+def vote_offset(src: np.ndarray, dst: np.ndarray, r: np.ndarray) -> tuple[np.ndarray, int, list, np.ndarray, int, np.ndarray]:
     """Offset taking `src` sheet mm onto `dst` at a known rotation `r`: the pairing most dots agree with (to
-    MATCH_MM), refined on them; (offset, agreeing dots), 0 dots when none."""
-    best = (0, np.zeros(2))
+    MATCH_MM), refined on them. Also the runner-up pairing (a different lead pairing, at least 1 mm from the
+    winner) and which `src` dots agree with the winner: a runner-up within one dot of the winner, or winner and
+    runner-up swapping between views, is the signature of a dot-pattern alias rather than a carry error.
+    Returns (offset, agreeing dots, agreeing src indices, runner-up offset, runner-up dots, residuals)."""
+    tried: list[tuple[int, float, np.ndarray]] = []  # one candidate per lead pairing: (dots agreeing, residual sum, offset)
     for p in dst:
         for q in src:
             off = p - r @ q
-            d = np.linalg.norm((src @ r.T + off)[:, None] - dst[None], axis=2).min(1)
-            if (d <= MATCH_MM).sum() > best[0]:
-                best = (int((d <= MATCH_MM).sum()), off)
-    n, off = best
-    if n:
+            res, idx, _ = _vote_detail(src, dst, r, off)
+            tried.append((int((res <= MATCH_MM).sum()), float(res[res <= MATCH_MM].sum()), off))
+    tried.sort(key=lambda c: (c[0], -c[1]), reverse=True)
+    n, off = (tried[0][0], tried[0][2]) if tried else (0, np.zeros(2))
+    run_off, run_n = np.zeros(2), 0
+    for c in tried:
+        if np.linalg.norm(c[2] - off) > 1.0:
+            run_n, run_off = c[0], c[2]
+            break
+    res, idx, _ = _vote_detail(src, dst, r, off)
+    if n:  # refined on the agreeing dots, as before
         m = np.linalg.norm((src @ r.T + off)[:, None] - dst[None], axis=2).argmin(1)
-        ok = np.linalg.norm(src @ r.T + off - dst[m], axis=1) <= MATCH_MM
+        ok = res <= MATCH_MM
         off = (dst[m[ok]] - src[ok] @ r.T).mean(0)
-    return off, n
+        res, idx, _ = _vote_detail(src, dst, r, off)
+    return off, n, idx, run_off, run_n, res
 
 
 def main() -> None:
@@ -143,8 +178,11 @@ def main() -> None:
     ap.add_argument("--red", type=float, nargs=2, metavar=("U", "V"), help="target the red dot nearest this UGREEN pixel")
     ap.add_argument("--strafe", action="store_true", help="allow base strafes where pan cannot align")
     ap.add_argument("--along", type=float, help="aim this far along past the dot (mm, from a measured touch) and skip the practice arc")
+    ap.add_argument("--lamp-test", action="store_true", help="run the lamp test even if a setting is cached")
+    ap.add_argument("--stop-file", type=Path, help="abort (the `finally` lifts the elbow) once this file exists: the dashboard's Stop")
     ap.add_argument("--jab", action="store_true", help="do the jab onto the paper (default: stop at hover; user: not yet)")
     args = ap.parse_args()
+
     out = args.out / time.strftime("%Y%m%dT%H%M%S")
     out.mkdir(parents=True)
     log, n = [], [0]
@@ -158,7 +196,12 @@ def main() -> None:
             finally:
                 waits[kind] = waits.get(kind, 0.0) + time.monotonic() - t0_
         return run
-    sleep, snap, arm_view, detect = (timed("sleep", time.sleep), timed("snap", tt.snap_arm), timed("grid", tm.arm_view),
+    def stoppable_sleep(s: float) -> None:  # every move is followed by a sleep: the Stop is seen within one move
+        if args.stop_file and args.stop_file.exists():
+            args.stop_file.unlink()  # once: the lift in `finally` sleeps too
+            raise KeyboardInterrupt("stopped from the dashboard")
+        time.sleep(s)
+    sleep, snap, arm_view, detect = (timed("sleep", stoppable_sleep), timed("snap", tt.snap_arm), timed("grid", tm.arm_view),
                                      timed("sam", sam.detect))
     loaded = {}  # SAM 3.1 loads (~9 s) while the lamps are set and the UGREEN opens
     loader = threading.Thread(target=lambda: loaded.setdefault("predictor", sam.load()), daemon=True)
@@ -170,14 +213,43 @@ def main() -> None:
         (out / "log.json").write_text(json.dumps(log, indent=1, default=lambda o: np.asarray(o).tolist()))
         print({k: (np.round(v, 2).tolist() if isinstance(v, (np.ndarray, list, tuple)) else v) for k, v in row.items()}, flush=True)
 
-    try:
-        note(phase="light", lamps=at.auto_light())
-    except RuntimeError as error:  # its "usable" test needs the old tip finder; lamp 13 alone worked every run
-        at.hue.set_light("12", False)
-        at.hue.set_light("13", True, bri=254, ct=250)
-        sleep(1.5)
-        note(phase="light", lamps=[0, 254], fallback=str(error))
-    ugcam = Camera()  # after the lamps: its exposure locks at open
+    note(phase="args", argv=" ".join(sys.argv[1:]))  # the replay runs with the same arguments (a string: note rounds lists)
+    warm = threading.Thread(target=read, daemon=True)  # the first bridge command opens SSH (~7 s): while the rest starts
+    warm.start()
+    lamps_file = args.out / "lamps.json"  # the last setting that passed the lamp test (plan 11 S1)
+    if lamps_file.exists() and not args.lamp_test:
+        # the test took 7-31 s and passed its first setting in 12 of 13 runs; the run's first views check the light anyway
+        a12, a13 = json.loads(lamps_file.read_text())
+        at.hue.set_light("12", a12 > 0, bri=a12 or None, ct=250)
+        at.hue.set_light("13", a13 > 0, bri=a13 or None, ct=250)
+        sleep(1.0)
+        note(phase="light", lamps=[a12, a13], cached=True)
+    else:
+        try:
+            lamps = at.auto_light()
+            lamps_file.write_text(json.dumps(list(lamps)))
+            note(phase="light", lamps=lamps)
+        except RuntimeError as error:  # its "usable" test needs the old tip finder; lamp 13 alone worked every run
+            at.hue.set_light("12", False)
+            at.hue.set_light("13", True, bri=254, ct=250)
+            sleep(1.5)
+            note(phase="light", lamps=[0, 254], fallback=str(error))
+    opened: dict = {}  # both UGREENs open at once (plan 11 S2): each settles and locks its exposure for a few s
+
+    def open_cam(name: str, *a, **k) -> None:
+        try:
+            opened[name] = Camera(*a, **k)
+        except RuntimeError as error:
+            opened[name] = error
+    openers = [threading.Thread(target=open_cam, args=("ug",)),
+               threading.Thread(target=open_cam, args=("side", SIDE), kwargs={"paper_target": SIDE_PAPER})]
+    for th in openers:
+        th.start()
+    for th in openers:
+        th.join()
+    if isinstance(opened["ug"], RuntimeError):
+        raise opened["ug"]
+    ugcam = opened["ug"]  # after the lamps: its exposure locks at open
     ug_frame, ug_n = timed("ugreen", ugcam.frame), [0]
 
     def ug_recorded(*a, **k):  # every UGREEN frame on disk, in call order: a run can be replayed (tools/replay_run.py)
@@ -187,8 +259,17 @@ def main() -> None:
         return f
     ugcam.frame = ug_recorded
     try:  # the side view shows the tip's height over the paper directly, where the overhead view is weakest
-        sidecam = Camera(SIDE)
-        sidecam.frame = timed("side", sidecam.frame)
+        if isinstance(opened["side"], RuntimeError):
+            raise opened["side"]
+        sidecam = opened["side"]
+        side_frame, side_n = timed("side", sidecam.frame), [0]
+
+        def side_recorded(*a, **k):  # in call order, as the UGREEN's: the replay serves them back
+            f = side_frame(*a, **k)
+            side_n[0] += 1
+            cv2.imwrite(str(out / f"side_{side_n[0]:03d}.jpg"), f)
+            return f
+        sidecam.frame = side_recorded
     except RuntimeError as error:
         sidecam = None
         note(phase="side-camera-missing", error=str(error))
@@ -280,6 +361,18 @@ def main() -> None:
                 sleep(0.3)
         raise RuntimeError("grid pose failed 3 frames running")
 
+    def settle(target: dict, ms: int, cap: float) -> None:
+        """Wait out a move by readback (plan 10.3): its `ms`, then until every moved joint reads within 2 pulses of
+        its target or stops changing (servo 2 rests ~16 short when rising), at most `cap` s in all (the old sleep)."""
+        sleep(ms / 1000)
+        end, prev = time.monotonic() + cap - ms / 1000, None
+        while time.monotonic() < end:
+            now = read()
+            if all(abs(now[k] - v) <= 2 for k, v in target.items()) or now == prev:
+                return
+            prev = now
+            sleep(0.1)
+
     def tip_sheet(rot, t) -> np.ndarray:
         return rot.T @ (tip_cam - t)  # sheet frame, z negative above the paper
 
@@ -299,15 +392,19 @@ def main() -> None:
         """The model tip at `pose` stays above `floor` (sheet mm, positive = into the paper)."""
         return float((a @ ca.tip_in_base(pose, tip_cam) + b)[2]) <= floor
 
-    def sam_find(img: np.ndarray, name: str, prompt: str, area, dark: float, thresh: float = SAM_THRESHOLD) -> np.ndarray:
+    def sam_find(img: np.ndarray, name: str, prompt: str, area, dark: float, thresh: float = SAM_THRESHOLD,
+                 no_teal: bool = False) -> np.ndarray:
         """Pixel centres of SAM 3.1 masks for `prompt` within `area` px whose darkest pixel is below
-        `dark` x the paper's brightness."""
+        `dark` x the paper's brightness; `no_teal` drops teal ink (a touched dot, drips)."""
         path = out / f"sam_{name}.png"
         cv2.imwrite(str(path), img)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         paper = float(np.median(gray[gray > np.percentile(gray, 40)]))
+        teal = lambda m: 45 <= np.median(hsv[..., 0][m]) <= 100 and np.median(hsv[..., 1][m]) > 35  # noqa: E731
         keep = [d["centroid"] for d in detect(predictor, str(path), prompt, thresh)
-                if d["centroid"] is not None and area[0] <= d["area"] <= area[1] and gray[d["mask"]].min() <= dark * paper]
+                if d["centroid"] is not None and area[0] <= d["area"] <= area[1] and gray[d["mask"]].min() <= dark * paper
+                and not (no_teal and teal(d["mask"]))]
         return np.array(keep, float).reshape(-1, 2)
 
     def arm_dots(img: np.ndarray, name: str) -> np.ndarray:
@@ -318,6 +415,24 @@ def main() -> None:
             if all(np.linalg.norm(q - p_) > 6.0 for p_ in pts):
                 pts.append(q)
         return np.array(pts, float).reshape(-1, 2)
+
+    def side_teal(img: np.ndarray, prev, r: int = 70):
+        """The inked tip in the side view by colour: the lowest pixel of the biggest teal blob within `r` px of its last
+        place (the window keeps other ink and the green parts out), or None."""
+        x, y = int(prev[0]), int(prev[1])
+        x0, y0 = max(0, x - r), max(0, y - r)
+        m = cv2.inRange(cv2.cvtColor(img[y0:y + r, x0:x + r], cv2.COLOR_BGR2HSV), (45, 35, 50), (100, 255, 255))
+        count, lab, st, _ = cv2.connectedComponentsWithStats(m)
+        keep = [j for j in range(1, count) if st[j, 4] >= 8]
+        if not keep:
+            return None
+        vs, us = np.nonzero(lab == max(keep, key=lambda j: st[j, 4]))
+        return np.array([us[vs == vs.max()].mean() + x0, vs.max() + y0], float)
+
+    def side_pose(img: np.ndarray, sheet_mm: np.ndarray) -> dict:
+        """The side camera's pose from the dots it shares with the UGREEN (tt.side_marks, tt.side_rig)."""
+        marks = tt.side_marks(img, lambda path, prompt, th: detect(predictor, path, prompt, th), out / "sam_side_dots.png")
+        return tt.side_rig(marks, sheet_mm)
 
     def cube_centre(img: np.ndarray, name: str, cam_rays) -> np.ndarray:
         """The red cube (user's orientation mark): SAM 3.1's biggest "red cube" mask, its centre placed
@@ -330,13 +445,15 @@ def main() -> None:
 
     hold = [False]
     roll_sign, roll_last, arm_tip_px = [1], [None], [free]  # roll pulse direction shrinking +across; (|across| before, step) of the last roll
+    rev_seen = [0, 0]  # (error sign, consecutive views with it): a pan/roll reversal needs 2 in a row first (below)
+    roll_last_dir = [0]  # sign of the last roll step taken: a new step against it is a reversal
     strafed, pan_gain, first_pan = [0.0], [0.0], [0, 0.0]  # net strafe (s, +vy); d(side err)/d(pan pulse)
+    chassis0, base_pose = [None], [lambda: None]  # the chassis marker's pose before any strafe, and how to measure it
     try:
         # rough depth first (cube-only tie, 180 deg as every tie today): the band loop below must not
         # lower the tip by a wrong (too short) depth into the paper
-        ug_pre = ugcam.frame()
         send({3: cmd[3] + 8}, ms=800)  # a nudge up (elbow +) so the UGREEN finds the needle as what moved
-        sleep(1.3)
+        settle({3: cmd[3] + 8}, 800, 1.3)
         cmd = {**cmd, 3: cmd[3] + 8}
         im0, rot0, t0, _, _ = view(cmd)
         ug0 = ugcam.frame()
@@ -347,7 +464,8 @@ def main() -> None:
         a0_, b0_ = ca.sheet_from_base(rot0, t0, cmd)
         cube_base = a0_.T @ (np.array([*ca0, -CUBE_MM / 2]) - b0_)  # carried by the model when it leaves the view
         r180 = -np.eye(2)
-        tip_cam = triangulate(ug0, rig0, rot0, t0, r180, ca0 - r180 @ cu0, tip_cam, "cube", ug_pre)
+        # dots-first tip depth (plan 10.8): the cube-tie attempt failed in every logged run ("nothing long and thin
+        # moved"); the start depth --lam holds until the dots tie triangulates it below
         # into the TIE band before the cameras are tied: under 15 mm a swing can drag on the paper (one
         # start was 3 mm up), over 30 mm SAM finds no dots in the arm view (they are too small at 65 mm)
         for _ in range(16):
@@ -358,7 +476,7 @@ def main() -> None:
             step = 8 if h < START_MIN_MM else -int(np.clip((h - 22.0) / 1.5, 3, 12))  # elbow: + raises, ~1.5 mm/pulse
             cmd = {**cmd, 3: cmd[3] + step}
             send({3: cmd[3]}, ms=800)
-            sleep(1.3)
+            settle({3: cmd[3]}, 800, 1.3)
         else:
             raise RuntimeError(f"could not bring the tip to {START_MIN_MM}-{TIE_MAX_MM} mm before starting")
         # coordinate system, re-initialised with both cameras every start (user): the UGREEN calibrates on
@@ -370,7 +488,9 @@ def main() -> None:
         uk, ud, ur, ut = (np.array(rig[q]) for q in ("k", "d", "r", "t"))
         # UGREEN: ink reads 0.00-0.01 of the paper, red 0.18+; the brighter arm camera reads ink at 0.18-0.27,
         # so there any dot-sized mask is a candidate and the geometry decides
-        ug_px = sam_find(ug_img, "ugreen", "small black dot", SAM_AREA, SAM_BLACK_FRAC)  # "black dot" finds only the binder holes in the 4K UGREEN
+        # "black dot" finds only the binder holes in the 4K UGREEN; "small black dot" found the ink dots until the light
+        # dimmed (0 of 4 in 171959, holes only); "dot" kept 2-3 in every frame of the day, inked ones filled from the file
+        ug_px = sam_find(ug_img, "ugreen", "dot", SAM_AREA, SAM_BLACK_FRAC, 0.3, no_teal=True)
         arm_px = arm_dots(im, "arm")
         ug_mm = np.array([tt.on_sheet(q, uk, ud, ur, ut)[:2] for q in ug_px]).reshape(-1, 2)
         arm_mm = np.array([at.sheet_xy(q, rot, t) for q in arm_px]).reshape(-1, 2)
@@ -393,12 +513,59 @@ def main() -> None:
         known_file.write_text(json.dumps(ug_px.tolist()))
         ug_tie = np.vstack([ug_mm, np.array([tt.on_sheet(q, uk, ud, ur, ut)[:2] for q in red_px]).reshape(-1, 2)])
         cube_u = cube_centre(ug_img, "ugreen", lambda q: tt.ray(q, uk, ud, ur, ut))
+        ug_marks = mk.on_paper(mk.detect(ug_img), lambda q: tt.on_sheet(q, uk, ud, ur, ut)[:2])  # they do not move
+
+        def marker_tie(im_, rot_, t_):
+            """(r, offset, markers, rms) tying this arm frame to the UGREEN's by the notebook's markers (plan 12 L1), or
+            None: no SAM, no dots, no cube; the dots stay the fallback."""
+            if not ug_marks:
+                return None
+            arm_m = mk.on_paper(mk.detect(im_), lambda q: at.sheet_xy(q, rot_, t_))
+            try:
+                r_, o_, n_, rms_ = mk.tie(ug_marks, arm_m)
+            except RuntimeError:
+                return None
+            if rms_ > MARKER_RMS_MM:
+                note(phase="marker-tie-rejected", markers=n_, rms_mm=rms_)
+                return None
+            return r_, o_, n_, rms_
+
+        def chassis() -> tuple | None:
+            """The chassis marker's centre (sheet mm) and heading in the UGREEN, or None (B1: the base's pose measured)."""
+            c = mk.detect(ugcam.frame()).get(mk.CHASSIS_ID)
+            return None if c is None else mk.in_sheet(c, uk, ud, ur, ut)
+        base_pose[0] = chassis
+        chassis0[0] = chassis()
+        if chassis0[0] is not None:
+            note(phase="base-pose", centre_mm=chassis0[0][0], heading_deg=chassis0[0][1])
+        side_cam = [None]  # the side camera's pose in this UGREEN sheet frame: it then measures the tip height in mm
+
+        def solve_side(when: str) -> None:
+            """Side pose, validated: the camera sits ~134-143 mm up (tape); a pose outside 80-250 mm is a wrong
+            correspondence, not a camera. Retried lazily before the descent if the tie-time one failed (plan 10.8)."""
+            if sidecam is None or side_cam[0] is not None:
+                return
+            try:
+                s_ = side_pose(sidecam.frame(), ug_tie)
+                if not 80.0 <= abs(s_["centre_mm"][2]) <= 250.0:
+                    raise RuntimeError(f"side pose {abs(s_['centre_mm'][2]):.0f} mm up: not the camera")
+                side_cam[0] = s_
+                note(phase="side-rig", when=when, dots=s_["dots"], rms_px=s_["rms"], centre_mm=s_["centre_mm"],
+                     tilt_deg=s_["tilt_deg"], runner_up=s_["runner_up"])  # nominal ~134-143 mm up, ~39 deg down
+            except RuntimeError as error:
+                note(phase="side-rig-failed", when=when, error=str(error))
+        solve_side("tie")
         try:
             cube_a = cube_centre(im, "arm", lambda q: (-rot.T @ t.ravel(), rot.T @ at.unit_ray(q)))
         except RuntimeError:  # out of the steeper view at the tie height: from the start frame, via the model
             cube_a = (a @ cube_base + b)[:2]
             note(phase="cube-carried", cube_mm=cube_a)
-        rot_u, off_u, matched = match_frames(ug_tie, arm_mm, cube_u, cube_a)
+        mt = marker_tie(im, rot, t)
+        if mt is not None:
+            rot_u, off_u, matched = mt[0], mt[1], 2 + mt[2]
+            note(phase="marker-tie", markers=mt[2], rms_mm=mt[3])
+        else:
+            rot_u, off_u, matched = match_frames(ug_tie, arm_mm, cube_u, cube_a)
         if matched < 2:  # one dot + the cube is good only to CUBE_TOL_MM
             raise RuntimeError(f"cameras tied on {matched} dot: need 2 (black or red) in the arm view")
         i = int(np.argmin(ug_px[:, 0])) if args.rightmost else 0  # the robot's right = the UGREEN's left (user)
@@ -423,7 +590,14 @@ def main() -> None:
         def retie(im_, rot_, t_) -> np.ndarray:
             """The target in a new arm frame by tying the cameras again (SAM 3.1) after every move: carrying it
             by matched ink marks failed (2 marks once) or slipped a whole pattern (~50 mm, live 2026-10-27).
-            The UGREEN dots do not move."""
+            The UGREEN dots do not move. The notebook's markers, when the arm view has one, tie it without SAM."""
+            mt_ = marker_tie(im_, rot_, t_)
+            if mt_ is not None:
+                got = tgt_mm @ mt_[0].T + mt_[1]
+                note(phase="retie", matched=2 + mt_[2], by="markers", rms_mm=mt_[3])
+                a_n, b_n = ca.sheet_from_base(rot_, t_, cmd)
+                base_target[0] = a_n.T @ (np.array([*got, 0.0]) - b_n)
+                return got + ug_fix[0]
             arm_px_ = arm_dots(im_, "arm_retie")
             arm_mm_ = np.array([at.sheet_xy(q, rot_, t_) for q in arm_px_]).reshape(-1, 2)
             try:
@@ -440,11 +614,17 @@ def main() -> None:
                 # the model's carry of the target picks which dot is which (dots >= 25 mm apart)
                 a_n, b_n = ca.sheet_from_base(rot_, t_, cmd)
                 prior = (a_n @ base_target[0] + b_n)[:2] if base_target[0] is not None else None
-                off_v, n_v = vote_offset(ug_tie, arm_mm_, rot_u)
+                off_v, n_v, idx_v, run_v, run_n, res_v = vote_offset(ug_tie, arm_mm_, rot_u)
                 if n_v >= 2 and prior is not None:  # logged only: at the first hover the vote found the carry 17-19 mm off in
                     # runs 115803/123956 and within 1.3 mm in the good runs, but right after the first move it read ~23 mm in
-                    # every run (2026-10-29 replays); which one is right is not settled, so the carry still decides
-                    note(phase="retie-vote", matched=n_v, carry_err_mm=tgt_mm @ rot_u.T + off_v - prior)
+                    # every run (2026-10-29 replays); which one is right is not settled, so the carry still decides.
+                    # `runner_up` + `dots` discriminate: an alias puts the runner-up within one dot of the winner and the
+                    # two swap between views; a real carry error keeps one correspondence whose offset moves smoothly.
+                    # A 2-dot winner is flagged weak: almost any dot pair agrees with some offset.
+                    note(phase="retie-vote", matched=n_v, carry_err_mm=tgt_mm @ rot_u.T + off_v - prior,
+                         vote_mm=tgt_mm @ rot_u.T + off_v, offset_mm=off_v, dots=idx_v,
+                         residuals_mm=[round(float(res_v[j]), 2) for j in idx_v],
+                         runner_up_mm=run_v, runner_up_dots=int(run_n), weak=bool(n_v < 3))
                 cands = [q - rot_u @ u_ + rot_u @ tgt_mm for u_ in ug_tie for q in arm_mm_]
                 if prior is None:
                     raise RuntimeError("re-tie failed: no cube and no prior for the target")
@@ -479,6 +659,52 @@ def main() -> None:
             ug_fix[0] = args.along * fwd
             target = target + ug_fix[0]
         note(phase="start", pose=cmd, target_mm=target, tip_mm=tip_sheet(rot, t), fwd=fwd)
+        side0 = np.array([-fwd[1], fwd[0]])
+        across0 = float((target - tip_sheet(rot, t)[:2]) @ side0)
+        if abs(across0) > REACH_SIDE_MM:
+            # strafe toward the target, measured by the UGREEN (tip and dot in its own sheet frame: the base move does not
+            # disturb it); vy's sign from the model: which way base +y moves the tip along `side`
+            vy_sign = float(np.sign(across0 * (a.T @ np.array([*side0, 0.0]))[1]))
+            side_u = rot_u.T @ side0  # the sideways direction in the UGREEN's sheet frame
+
+            def across_ug() -> float:
+                px = teal_tip(ugcam.frame())
+                if px is None:
+                    raise RuntimeError("strafing to reach: the UGREEN lost the tip")
+                o, d = tt.ray(px, uk, ud, ur, ut)
+                return float((tgt_mm - (o + d * ((tip_sheet(rot, t)[2] - o[2]) / d[2]))[:2]) @ side_u)
+            left_s, mm_s = REACH_STRAFE_S, 25.0  # mm per second of strafe: 8-51 measured (mecanum slip), relearnt per pulse
+            now = across_ug()
+            note(phase="reach-strafe-start", across_mm=across0, across_ug_mm=now)
+            while abs(now) > REACH_TO_MM and left_s >= 0.15:
+                sec = float(np.clip(0.8 * (abs(now) - REACH_TO_MM + 5.0) / mm_s, 0.15, min(0.5, left_s)))
+                drive(0.0, STRAFE_V * vy_sign, sec)
+                strafed[0] += sec * vy_sign
+                left_s -= sec
+                before, now = now, across_ug()
+                moved = abs(before) - abs(now)
+                note(phase="reach-strafe", sec=sec, across_ug_mm=now, moved_mm=moved)
+                if moved < -3.0:  # going away: the sign is wrong, a reversal may be refused by the gateway
+                    raise RuntimeError(f"strafing to reach moved away from the target ({moved:.1f} mm)")
+                if moved > 2.0:
+                    mm_s = 0.5 * mm_s + 0.5 * moved / sec
+            # the base moved: tie the cameras again from scratch (the model's carry of the target is in the old base)
+            im, rot, t, blobs, (a, b) = view(cmd)
+            mt = marker_tie(im, rot, t)
+            if mt is not None:
+                rot_u, off_u, matched = mt[0], mt[1], 2 + mt[2]
+            else:
+                arm_mm_ = np.array([at.sheet_xy(q, rot, t) for q in arm_dots(im, "arm_reach")]).reshape(-1, 2)
+                cube_a_ = cube_centre(im, "arm_reach", lambda q: (-rot.T @ t.ravel(), rot.T @ at.unit_ray(q)))
+                rot_u, off_u, matched = match_frames(ug_tie, arm_mm_, cube_u, cube_a_)
+            if matched < 2:
+                raise RuntimeError(f"after strafing the cameras tied on {matched} dot: need 2")
+            target = tgt_mm @ rot_u.T + off_u
+            base_target[0] = a.T @ (np.array([*target, 0.0]) - b)
+            target = target + ug_fix[0]  # --along's offset, as at the first tie
+            fwd = arm_fwd(cmd, a)
+            note(phase="reach-tied", matched=matched, target_mm=target, tip_mm=tip_sheet(rot, t),
+                 side_mm=float((target - tip_sheet(rot, t)[:2]) @ np.array([-fwd[1], fwd[0]])))
 
         # 2./3. place: the tip at target - fwd * FWD, UP above the paper; relative model moves from here
         shoulder0 = read()[2]
@@ -486,7 +712,7 @@ def main() -> None:
         pan_dir, strafe_mm_s = 0, 25.0  # mm/s sideways per +vy second; sign and size learnt from each pulse
         practiced = {}  # pose -> (landing seen, low_mm): a re-aim under the placing tolerance leaves the pose as it
         # was, and the arc again measured the same landing (7 rounds, 124 s across 4 runs, logs 2026-10-28)
-        strafed[0] = 0.0
+        misses: list[float] = []  # |predicted landing miss| per UGREEN round (plan 10.5a)
         for rnd in range(UG_ROUNDS):  # placing, then the UGREEN's check of the landing; its error re-aims placing
             gap_fix = None
             for it in range(1 if rnd else 0, PLACE_ITERS + 1):  # re-aims start from hover: a fresh first move left the arc out of reach
@@ -523,15 +749,33 @@ def main() -> None:
                 if roll_last[0] is not None and abs(across) > roll_last[0][0] + 0.3:  # the last roll step went the wrong way
                     roll_sign[0] = -roll_sign[0]
                 roll_last[0] = None
+                # a lateral reversal (a roll step against the last one, or a pan reversal) needs the error's sign to
+                # agree on 2 consecutive views first: one view can be a bad re-tie (1-dot ties jumped 17 mm) and
+                # reversing on it spends the backlash for nothing. rev_ok: this sign may be reversed into now.
+                sgn = int(np.sign(across))
+                rev_seen[:] = [sgn, rev_seen[1] + 1] if sgn and sgn == rev_seen[0] else [sgn, 1 if sgn else 0]
+                rev_ok = rev_seen[0] if rev_seen[1] >= 2 else 0
                 sideways_ok = -tip[2] >= SIDE_MIN_MM and abs(along) <= ALONG_FIRST_MM  # along first: it sat at -57 mm for 10 sideways steps; rule: no sideways motion under 8 mm, height first (pan swung 20 mm at 5.6 mm, live 2026-10-28)
+                held_roll = True  # set False below only when a roll step is actually sized this iteration
                 if it > 0 and sideways_ok and SIDE_TOL_MM < abs(across) <= ROLL_REACH_MM:
                     # the last sideways mm by roll (0.26 mm/pulse); the arm camera does not roll, so the tip pixel is
-                    # found again after each step and the tip re-placed on its ray at the same depth
-                    d = roll_sign[0] * int(np.sign(across)) * int(np.clip(round(abs(across) / ROLL_MM), 1, 8))
+                    # found again after each step and the tip re-placed on its ray at the same depth.
+                    # Actuator choice by expected residual: pan is never offered here — its realised gain spans
+                    # -0.8..19.5 mm/pulse (PAN_SIGMA_MM), so at <=6 mm roll wins however it is sized; the choice left
+                    # is the step size. Deadband-aware: the first ROLL_DEADBAND pulses move nothing, and the step
+                    # aims ROLL_AIM_MM short of the dot instead of at it.
+                    n_roll = int(np.clip(ROLL_DEADBAND + round((abs(across) - ROLL_AIM_MM) / ROLL_MM), 1, 8))
+                    held_roll = bool(roll_last_dir[0] and int(np.sign(across)) != roll_last_dir[0]
+                                     and rev_ok != int(np.sign(across)))
+                    if held_roll:
+                        note(phase="reverse-held", actuator="roll", side_mm=across)
+                    else:
+                        d = roll_sign[0] * int(np.sign(across)) * n_roll
+                if it > 0 and sideways_ok and SIDE_TOL_MM < abs(across) <= ROLL_REACH_MM and not held_roll:
                     if abs(cmd[5] + d - roll0) > ROLL_MAX:
                         raise RuntimeError(f"roll {cmd[5] + d} beyond {ROLL_MAX} pulses from {roll0}")
                     send({5: cmd[5] + d}, ms=600)
-                    sleep(1.2)
+                    settle({5: cmd[5] + d}, 600, 1.2)
                     cmd = {**cmd, 5: cmd[5] + d}
                     im, rot, t, blobs2, (a, b) = view(cmd)
                     px_ = sam_needle_tip(im, f"arm_tip_roll{it}", far_up=True)
@@ -542,6 +786,7 @@ def main() -> None:
                     shift, hits = tm.lattice_offset(blobs, blobs2)
                     target, blobs = retie(im, rot, t), blobs2
                     roll_last[0] = (abs(across), d)
+                    roll_last_dir[0] = int(np.sign(d))
                     note(phase="roll-step", it=it, roll=cmd[5], step=d, side_before_mm=across)
                     continue
                 if it == 1 and first_pan[0]:
@@ -550,7 +795,10 @@ def main() -> None:
                 left = STRAFE_BUDGET_S - abs(strafed[0])
                 step_dir = -int(np.sign(across * pan_gain[0])) if pan_gain[0] else 0  # pan step shrinking the error
                 reverse = bool(step_dir) and bool(pan_dir) and step_dir != pan_dir  # a reversal jumps ~20 mm
-                if it > 0 and sideways_ok and abs(across) > ROLL_REACH_MM and step_dir and (not reverse or left < 0.15 or not args.strafe):
+                held_pan = reverse and rev_ok != int(np.sign(across))  # an unproven reversal is held this iteration:
+                if held_pan:  # the strafe branch (on --strafe) or the arm move below runs instead
+                    note(phase="reverse-held", actuator="pan", side_mm=across)
+                if it > 0 and sideways_ok and abs(across) > ROLL_REACH_MM and step_dir and not held_pan and (not reverse or left < 0.15 or not args.strafe):
                     # pan first (user); a reversal takes up the slack in the same move when strafing is not available
                     # (the gateway refused: "drive outside bounded no-reverse envelope", live 2026-10-27)
                     # sized from the measured gain, no automatic slack take-up: 2 + 5 pulses jumped 17 mm across the dot
@@ -558,7 +806,7 @@ def main() -> None:
                     d = step_dir * int(np.clip(round(abs(across) / max(abs(pan_gain[0]), 0.5)), 1, PAN_STEP))  # +4 jumped 23 mm (live 2026-10-28)
                     before_side = across
                     send({1: cmd[1] + d}, ms=800)
-                    sleep(1.4)
+                    settle({1: cmd[1] + d}, 800, 1.4)
                     cmd, pan_dir = {**cmd, 1: cmd[1] + d}, step_dir
                     im, rot, t, blobs2, (a, b) = view(cmd)
                     shift, hits = tm.lattice_offset(blobs, blobs2)
@@ -630,7 +878,7 @@ def main() -> None:
                 if args.plan_only:
                     return
                 send({k: planned[k] for k in joints}, ms=1500)
-                sleep(2.3)
+                settle({k: planned[k] for k in joints}, 1500, 2.3)
                 cmd = planned
                 im, rot, t, blobs2, (a, b) = view(cmd)
                 # the shoulder gave way once under load (272 for 280) and the needle hit the paper hard: stop on a
@@ -688,12 +936,12 @@ def main() -> None:
                 while h > PRACTICE_H and (land[0] - cmd[4]) * land[2] > 0:
                     cmd = {**cmd, 4: cmd[4] + land[2] * WRIST_STEP}
                     send({4: cmd[4]}, ms=400)
-                    sleep(0.9)
+                    settle({4: cmd[4]}, 400, 0.9)
                     im, rot, t, blobs2, (a, b) = view(cmd)
                     h = -tip_sheet(rot, t)[2]
                 low_px = teal_tip(ugcam.frame())
                 send({4: w0}, ms=600)
-                sleep(1.1)
+                settle({4: w0}, 600, 1.1)
                 cmd = {**cmd, 4: w0}
                 im, rot, t, blobs, (a, b) = view(cmd)
                 target = retie(im, rot, t)
@@ -701,9 +949,16 @@ def main() -> None:
                     o, d = tt.ray(low_px, uk, ud, ur, ut)
                     low = (o + d * ((-h - o[2]) / d[2]))[:2]
                     seen = low + (low - ug0) * h / (h0 - h)
-                    gap_fix = rot_u @ (tgt_mm - seen)
-                    practiced[pose_key] = (seen, h)
-                    note(phase="practice-arc", low_mm=h, low_px=low_px, dot_minus_landing_mm=gap_fix)
+                    hover_fix, gap_fix = gap_fix, rot_u @ (tgt_mm - seen)
+                    if np.linalg.norm(gap_fix) > UG_MAX_MM:
+                        # a long curved arc (hover ~50 mm back from a dot close to the robot): the straight extrapolation
+                        # read 17.5 mm off while the model arc and the hover check agreed to ~1 mm (172244); it read 9-12 mm
+                        # off on curved arcs before (2026-10-28). Not a landing: keep the hover check's sideways fix
+                        note(phase="practice-arc-implausible", low_mm=h, low_px=low_px, dot_minus_landing_mm=gap_fix)
+                        gap_fix = hover_fix
+                    else:
+                        practiced[pose_key] = (seen, h)
+                        note(phase="practice-arc", low_mm=h, low_px=low_px, dot_minus_landing_mm=gap_fix)
                 else:
                     note(phase="practice-arc-failed", low_mm=h, low_px=low_px)
             if gap_fix is not None and np.linalg.norm(gap_fix) > UG_MAX_MM:
@@ -711,6 +966,12 @@ def main() -> None:
             if gap_fix is None:  # an unchecked landing is no landing (review 2026-10-28)
                 raise RuntimeError("UGREEN landing check failed: not touching unchecked")
             if np.linalg.norm(gap_fix) <= UG_TOL_MM:
+                break
+            misses.append(float(np.linalg.norm(gap_fix)))
+            if rnd >= 2 and misses[-2] - misses[-1] <= UG_GAIN_MIN_MM and misses[-1] <= UG_TOUCH_MAX_MM:
+                # plan 10.5a: 4 rounds of 164912 moved the predicted miss within +-1 mm noise and the ink landed 2.7 mm off
+                # all the same; a round that does not improve by more than the noise is not worth ~20 s
+                note(phase="rounds-stopped", round=rnd, misses_mm=misses, predicted_miss_mm=gap_fix)
                 break
             gap_fix = UG_GAIN * gap_fix  # full fixes swung -12/+10/-8 mm at 40 mm reach (pan stick-slip, live 2026-10-28)
             ug_fix[0] = ug_fix[0] + gap_fix  # the arm tie aimed 12.5 mm beside dot 2 (one dot in view, live 2026-10-28)
@@ -726,36 +987,60 @@ def main() -> None:
         # 4. final contact: the wrist turns toward the arc's landing in WRIST_STEP pulses, height measured each
         # step; stop at the paper or at the planned wrist value
         w_end, _, wdir = land
-        side_prev = [None]
+        side_prev, tri_stop = [None], False
+        solve_side("descent")  # a second try if the tie-time pose failed
 
-        def side_look(name: str):
-            """Side-camera frame saved, the teal tip in it and how far it moved down since the last look (px)."""
+        def side_look(name: str, ug_px=None):
+            """Side-camera frame saved, the tip in it, how far it moved down since the last look (px) and, with the
+            UGREEN's tip pixel and a side pose, the tip's height over the paper triangulated from both (mm, ray miss)."""
             if sidecam is None:
-                return None, None
+                return None, None, None
             f = sidecam.frame()
             cv2.imwrite(str(out / f"side_{name}.jpg"), f)
-            try:  # SAM 3.1 finds the needle in every side frame (0.74-0.87); the teal finder needs an inked tip
-                px = sam_needle_tip(f, f"side_{name}", far_up=False)
-            except RuntimeError:
-                px = None
+            sk_ = (None if side_cam[0] is None else
+                   (np.array(side_cam[0]["k"]), np.array(side_cam[0]["d"]), np.array(side_cam[0]["r"]), np.array(side_cam[0]["t"])))
+
+            def tri(px_):
+                if px_ is None or ug_px is None or sk_ is None:
+                    return None
+                p3, miss = tt.meet(tt.ray(ug_px, uk, ud, ur, ut), tt.ray(px_, *sk_))
+                return float(-p3[2]), miss
+            # the inked tip by colour near its last place first (~14 ms; within 1-5 px of SAM on 3 inked runs): SAM 3.1
+            # (~350 ms) only when there is no teal there or the two cameras' rays then miss each other (a dry tip, ink
+            # smeared on the paper)
+            px = side_teal(f, side_prev[0]) if side_prev[0] is not None else None
+            s_h = tri(px)
+            if px is None or (s_h is not None and s_h[1] > TRI_MISS_MM):
+                try:  # SAM 3.1 finds the needle in every side frame (0.74-0.87)
+                    px = sam_needle_tip(f, f"side_{name}", far_up=False)
+                except RuntimeError:
+                    px = None
+                s_h = tri(px)
             down = float(px[1] - side_prev[0][1]) if px is not None and side_prev[0] is not None else None
             side_prev[0] = px if px is not None else side_prev[0]
-            return px, down
+            return px, down, s_h
         while (w_end - cmd[4]) * wdir > 0:
             nxt = cmd[4] + wdir * min(WRIST_STEP, abs(w_end - cmd[4]))
             send({4: nxt}, ms=400)
-            sleep(0.9)
+            settle({4: nxt}, 400, 0.9)
             cmd = {**cmd, 4: nxt}
-            im, rot, t, blobs2, (a, b) = view(cmd)
-            h = -tip_sheet(rot, t)[2]
-            s_px, s_down = side_look(f"wrist_{nxt}")
-            note(phase="wrist", wrist=nxt, height_mm=h, side_tip_px=s_px, side_down_px=s_down)
-            if h <= 0.3:
+            s_px, s_down, s_h = side_look(f"wrist_{nxt}", teal_tip(ugcam.frame()))
+            if s_h is not None and s_h[1] <= TRI_MISS_MM:
+                h = None  # the cameras measure the height: no arm view this step (plan 12 L3, ~0.7 s each)
+            else:  # no triangulation: the arm camera's height, as before
+                im, rot, t, blobs2, (a, b) = view(cmd)
+                h = -tip_sheet(rot, t)[2]
+            note(phase="wrist", wrist=nxt, height_mm=h, side_tip_px=s_px, side_down_px=s_down,
+                 tri_height_mm=None if s_h is None else s_h[0], tri_miss_mm=None if s_h is None else s_h[1])
+            if s_h is not None and s_h[1] <= TRI_MISS_MM and s_h[0] <= TRI_STOP_MM:
+                tri_stop = True
+                break
+            if h is not None and h <= 0.3:
                 break
         # the arm-camera height is not a contact signal: 1-pulse steps on until the tip stops in the UGREEN or
         # the wrist stalls; the first contact leaves a teal ink mark, the judge
         prev, contact, stills, side_stills = teal_tip(ugcam.frame()), None, 0, 0
-        for extra in range(1, CONTACT_EXTRA + 1):
+        for extra in range(1, 0 if tri_stop else CONTACT_EXTRA + 1):  # on the paper already: no pulse further
             nxt = cmd[4] + wdir
             send({4: nxt}, ms=200)
             sleep(0.6)
@@ -763,9 +1048,10 @@ def main() -> None:
             ug_f = ugcam.frame()
             now_px, lag = teal_tip(ug_f), abs(read()[4] - nxt)
             moved = float(np.linalg.norm(now_px - prev)) if now_px is not None and prev is not None else None
-            s_px, s_down = side_look(f"contact_{extra:02d}")
+            s_px, s_down, s_h = side_look(f"contact_{extra:02d}", now_px)
             note(phase="contact-step", wrist=nxt, extra=extra, tip_px=now_px, moved_px=moved, lag=lag,
-                 side_tip_px=s_px, side_down_px=s_down)
+                 side_tip_px=s_px, side_down_px=s_down,
+                 tri_height_mm=None if s_h is None else s_h[0], tri_miss_mm=None if s_h is None else s_h[1])
             cv2.imwrite(str(out / f"contact_{extra:02d}_ugreen.jpg"), ug_f)
             stills = stills + 1 if moved is not None and moved < CONTACT_STILL_PX else 0  # 2 running: the tip px jitters ~1 px
             # the side view sees a 1-pulse step as ~3 px down in the air; resting on the paper it stops
@@ -774,7 +1060,7 @@ def main() -> None:
                 contact = "stall" if lag >= CONTACT_LAG else "still" if stills >= 2 else "side-still"
                 break
             prev = now_px
-        note(phase="contact", by=contact, wrist=cmd[4])
+        note(phase="contact", by="tri-height" if tri_stop else contact, wrist=cmd[4])
         im, rot, t, blobs2, (a, b) = view(cmd)
         cv2.imwrite(str(out / "contact_arm.png"), im)
         ug_contact = ugcam.frame()
@@ -795,10 +1081,32 @@ def main() -> None:
             note(phase="holding", pose=cmd)
             return
         if abs(strafed[0]) >= 0.05:  # put the base back where it started
-            drive(0.0, -STRAFE_V * np.sign(strafed[0]), min(abs(strafed[0]), 0.5))
-            if abs(strafed[0]) > 0.5:
-                drive(0.0, -STRAFE_V * np.sign(strafed[0]), abs(strafed[0]) - 0.5)
-            note(phase="strafe-back", seconds=-strafed[0])
+            now_p = base_pose[0]() if chassis0[0] is not None else None
+            if now_p is not None:  # closed loop on the chassis marker (B1): the time-based undo drifted between runs
+                mm_s, back_s = 25.0, 0.0
+                for _ in range(10):
+                    dist = float(np.linalg.norm(now_p[0][:2] - chassis0[0][0][:2]))
+                    if dist <= 3.0:
+                        break
+                    sec = float(np.clip(0.8 * dist / mm_s, 0.15, 0.5))
+                    drive(0.0, -STRAFE_V * np.sign(strafed[0]), sec)
+                    back_s += sec
+                    prev_p, now_p = now_p, base_pose[0]()
+                    if now_p is None:
+                        break
+                    moved = float(np.linalg.norm(prev_p[0][:2] - chassis0[0][0][:2]) - np.linalg.norm(now_p[0][:2] - chassis0[0][0][:2]))
+                    if moved < -2.0:  # past the start: the gateway refuses reversals, leave it there
+                        break
+                    if moved > 2.0:
+                        mm_s = 0.5 * mm_s + 0.5 * moved / sec
+                note(phase="strafe-back", seconds=-back_s, closed_loop=True,
+                     residual_mm=None if now_p is None else float(np.linalg.norm(now_p[0][:2] - chassis0[0][0][:2])))
+            else:
+                left_s = abs(strafed[0])
+                while left_s >= 0.05:  # the gateway caps a pulse at 0.5 s; a reach strafe is up to REACH_STRAFE_S
+                    drive(0.0, -STRAFE_V * np.sign(strafed[0]), min(left_s, 0.5))
+                    left_s -= 0.5
+                note(phase="strafe-back", seconds=-strafed[0])
         if not args.plan_only:
             send({3: cmd[3] + LIFT_ELBOW}, ms=1500)  # elbow only: re-sending servo 2 read-back sinks it
             sleep(2.2)

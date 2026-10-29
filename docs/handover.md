@@ -23,8 +23,26 @@ Details and every run: `docs/plan_speedup_2026-10-29.md` §9.
 | Best run | `20261029T125405`: touch in 135 s, stopped by the side camera (`side-still`); ink ~1.7 mm (low confidence, on an old mark). `20261029T120925`: ink 1.49 mm, clean round blot |
 | Before each run | re-ink the tip (one touch spends it); `python tools/arm_to_start.py <dir>` (start pose, elbow 190: `model_jab` lowers it measured to ~160); stop `sensor_supervisor_node` after any stack restart (by pid, see memory: `pgrep -f` over ssh matches its own shell) |
 | Run | `<hackathon venv python> tools/model_jab.py --out evidence/descend --lam 190 --jab` (no 590 s tool timeout: runs take 135-500 s) |
+| Side camera | 143 mm up, tilted 39 deg. Its pose is solved at every tie from the dots it shares with the overhead (`tt.side_marks` + `tt.side_rig`: SAM "dot" on a paper crop, every 4-point correspondence, f fixed 1148); the grid cannot place it (numbering slips at that slant). Dots triangulate onto the paper within -1.1..+0.8 mm. `model_jab` logs `tri_height_mm` (tip over the paper from overhead + side, mm) at every wrist and contact step. Re-aim with `tools/side_aim.py` (OK at >= 6 of 7 dots) |
+| Demo | `<venv python> tools/dashboard.py [--lan]` -> http://localhost:8000: overhead, side and arm streams with SAM 3.1 detections, click a dot to target it, Arm to start / Run touch / Stop / Park. It holds both UGREENs: run touches from it, not from a second terminal |
 | After | `python tools/arm_park.py <dir>` folds the arm up and back (needle clear of the paper) before power-off |
 | Open | 12 mm sideways start error in 2 of 5 runs (ties exact; differs only in pan 531-533 vs 520-524); side camera not metric (grid and dots not resolvable at its angle: raise it / tilt 15-20 deg down); next touch on a fresh dot to judge accuracy |
+
+## Session 2026-10-29 evening: plan section 10 cheap wins, red dots
+
+- Implemented (plan 10.8 "cheap wins"): dots-first tip depth (cube attempt removed), validated + lazy side rig,
+  UGREEN round stop rule (`rounds-stopped`), readback-settled waits (`settle`). Side camera exposure now locks on the
+  paper (`rig_io.SIDE_PAPER`): a median lock put its paper at 223/255 and SAM lost the dots (the 0-dot side-rig failures).
+- Descent stops on the triangulated height (`contact by=tri-height`); far targets strafe first (`reach-strafe`,
+  > 30 mm sideways); overhead black dots by SAM "dot" minus teal (small black dot went blind at dusk); an implausible
+  practice arc (> 15 mm, long curved arcs) is ignored for the hover check's sideways fix.
+- Red dot 1 (1133, 479): touched 170928, tip on the dot at contact (~1 mm by eye, dry tip, no mark).
+- Red dot 2 (1302, 359): 5 tries, no touch: argmin crash on an empty arm view (fixed), 32 mm not strafed (threshold
+  35 -> 30), 0 overhead dots (prompt fixed), practice arc 17.5 mm (now ignored), last: start tie failed (cube/dots not
+  agreeing; base drifted from strafe-backs?). Red dot 3 (904, 563) not tried.
+- Other agent (Muse, .pi/): ran 3 live runs in parallel, changed side_rig (one-to-one matching) and placing (reversal
+  hold, roll deadband). Its `evidence/replay_new/`, `evidence/live_run_stdout*.txt`, `nul` are untracked leftovers.
+- Arm parked {2: 900, 3: 0}. Nothing committed since ab37796.
 
 ## Session 2026-10-28 (live): what changed in `model_jab.py`
 

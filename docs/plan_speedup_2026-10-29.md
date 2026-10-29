@@ -535,3 +535,156 @@ into old ink (a re-touched dot's mark hid it). Re-ink the tip before every run: 
 | 12 mm start error | **cause: the model carry of the target.** At the first hover the arm-view dots (3 agreeing, one solution) put the target 16.9 / 19.2 mm from the carry in 123956 / 115803 and 0.0-0.9 mm in the good runs; the arm tip pixel is fine (start, roll and hover pixels agree to 1-3 mm). `retie` with the cube out of view takes a dot only within 8 mm of the carry, so a drifted carry refuses every true dot |
 | Fix | `vote_offset` (dots agreeing at the tie's rotation) is **logged only** (`retie-vote` rows): right after the first move it read ~23 mm in every run, good ones included (2 dots, once 3), and the replay cannot tell whether that is the vote or the carry. Decide from the next live runs' `retie-vote` rows |
 | W3 cube depth skip | dropped: the failing cube attempt is one classical check; the time was the band loop after it (10-11 views, 18-20 s, elbow 270 -> ~160 in steps of 12). `arm_to_start.py` now leaves the elbow at 190: ~3-4 views, ~12 s less |
+
+
+## 10. Rethink (2026-10-29 evening): fewer iterations, not faster calls
+
+Supersedes the framing of W1-W8 where they conflict. W1-W8 optimised calls inside the
+existing loop; the live evidence now says the loop itself is the cost. Run
+`20261029T164912` (276 s, touch, uncommitted Q1/Q3 changes live) logged 40 `place`
+rows, 39 reties, 34 retie-votes, 20 place-plans, 6 UGREEN rounds. Wait buckets:
+sleep 100.8 s, SAM 74.4 s, snap 32.9 s, grid 12.2 s, UGREEN 10.8 s, side 4.7 s.
+The run is iteration-bound, not inference-bound: every 1-pulse correction pays for
+a full world re-measurement (snap -> grid PnP -> 2-3 SAM detect() calls -> retie),
+then spends that measurement on one deliberately tiny single-axis move. Shaving
+0.2 s off a SAM call (measured session reuse: 1.05 s -> 0.88 s for 3 prompts)
+cannot fix that. The items below delete iterations or make them cheap.
+
+### 10.1 Measured: UGREEN rounds chase noise
+Predicted landing miss across the 6 UGREEN checks of 20261029T164912:
+[0.06, 0.00], [-0.31, 0.03], [0.32, -0.03], [-0.23, 0.02], [0.77, -0.08],
+[0.73, -0.07] mm, then `touch-unconverged predicted_miss_mm=[1.05, -2.20]` and a
+jab anyway; final ink 2.7 mm from the dot. Four ~20 s rounds improved nothing
+beyond the +/-1 mm measurement noise. Also from that run: side camera solved
+0 dots (`side-rig-failed`), so `tri_height_mm` was None throughout and the
+descent ran on model height alone - the side-view stop contributed nothing.
+
+### 10.2 R1 - Track, do not re-solve (replaces W1/W7 mechanics)
+Keep the tie as persistent state (dots, cube, camera poses, target do not move
+during a run). After each move, predict the tip from the arm model plus the last
+measured offset; verify with classical vision (teal tip HSV, thresholded dot
+blobs, needle line). SAM runs at start-up, on confidence loss, and on
+disagreement > threshold only. SAM is the teacher: it has labelled every logged
+frame, so a classical detector can be validated offline against that corpus and
+gated on agreement, with per-frame fallback. Target: 39 SAM reties -> ~6,
+SAM 74 s -> ~15 s per run.
+
+### 10.3 R2 - Condition-based waits, plan from readback (extends W2/W3)
+Replace fixed sleeps (0.9-2.3 s after every send) with motion-settled detection:
+poll joint readback until stable within a pulse for ~100 ms, then one fresh
+frame (bridge frame sequence newer than move end, not 3 averaged). Plan from
+actual readback, not commanded pose (arm_to_start ended 20261029T164912's
+session with joint 2 at 404 vs goal 420, a persistent -16 pulse lag, yet placing
+plans from commands). Batch axes: pan+roll+elbow in one send(), one settle, one
+view. Target: most of sleep 100.8 s, plus deletion of lag-chasing iterations.
+
+### 10.4 R3 - One-shot placing with a learned local Jacobian (W6, promoted)
+Solve all joints at once against the predicted landing (not the tip), minimising
+predicted miss plus a deadband/backlash penalty; verify once; one small
+correction. Update the Jacobian online (recursive least squares) from every
+measured move, seeded from the 82 logged runs (pan: 191 steps, realised gain
+median 1.79 mm/pulse, range -0.78..19.5 - model pan with a sigma, not a
+threshold). ROLL_DEADBAND/ROLL_AIM_MM/PAN_SIGMA_MM from the Q3 work are the
+hand-set version of these priors. Target: 20 place-plans -> 3-5.
+
+### 10.5 R4 - UGREEN: uncertainty-aware stop + same-frame final loop
+(a) Stop rule: if the predicted miss has not improved by more than the combined
+model+actuator uncertainty (~1-2 mm) for 2 rounds, descend; cap 3 rounds unless
+a round improves >1 mm. Zero accuracy cost by 10.1's evidence; saves ~60-80 s
+on runs like 164912. (b) At low hover the 4K overhead sees tip and dot in the
+same frame: that relative vector, through the paper homography with the
+practice-arc travel slope for the remaining drop, is a direct error signal with
+no tie chain, no arm-camera SAM, no grid PnP. Drive the final lateral roll
+correction from single overhead grabs (~0.3 s each).
+
+### 10.6 R5 - Continuous watched descent
+Stream both cameras during one slow wrist arc; detect contact from the frame
+sequence (tip velocity -> 0 in side view; teal stop / ink spread overhead) with
+classical tracking at frame rate. No per-step SAM, no per-step sleep: 33 s ->
+~10 s, and streak shrinks because stop latency is a frame, not a pulse plus
+settle. Prerequisite: diagnose the side camera 0-dot failure from
+20261029T164912's saved side frames first (rig moved vs the one-to-one
+assignment in tt.side_rig being too strict - unresolved). Fallback:
+overhead-only motion stop. Conductive-foil contact (RCA section 9.1) would make
+this section trivially fast and certain; still the cheapest independent signal
+available.
+
+### 10.7 R6 - Persistent rig daemon (structural)
+One long-lived desktop process: cameras open, streaming into ring buffers, SAM
+warm, one long-lived bridge connection instead of per-command SSH, exposure
+locked. A run becomes a request to a hot system: start-up ~49 s -> ~10 s, the
+camera-reopen failure class (run 20261029T162940) disappears, latest frame is
+always available (enables R2/R4b/R5), and calibration amortises across touches.
+Per-touch marginal time is the metric a colony picker lives by; today every
+touch re-buys full start-up plus SAM load (8.7 s).
+
+### 10.8 Projection (276 s-class run; rows are not fully additive)
+| Stage | Items | Estimate |
+|---|---|---|
+| Now | - | 276 s |
+| Cheap wins | dots-first tip-depth, lazy/validated side-rig, R4a stop rule, R2 waits+readback | ~160-180 s |
+| Perception | R1 tracking, R4b same-frame loop | ~100-120 s |
+| Control | R3 one-shot placing, R5 continuous descent | ~70-90 s |
+| Daemon + batch | R6, multi-touch amortisation | ~40-60 s per touch (marginal) |
+
+Trust decreases down the table. First two rows are the committed next step;
+R3/R5 need the offline corpus work (W5/W6 tooling) as their gate, same as W4
+did. Section 5 acceptance (median touched run <= 120 s) is unchanged and now
+has a credible path; with R6 the metric should be re-stated per touch across a
+multi-touch session.
+
+### 10.9 Superseded / adjusted
+- W1 session reuse: measured negligible; dropped in favour of R1 (do not call
+  SAM at all, most iterations).
+- W4 practice-arc cache: kept (2 fires in 164912), but R4a caps total rounds.
+- W8 fail-fast: stays dropped (10.1 is the counterexample: an "unconverged"
+  run touched at 2.7 mm; aborting it would have wasted a good touch).
+- Q3 reversal guard (live in 164912, reverse-held x3, no through-zero thrash):
+  kept; it is the hand-set special case of R3's uncertainty-aware sizing.
+
+## 11. More speed gains, measured on the 16 logged runs of 2026-10-29 afternoon (wait_s rows)
+
+Waits over 14 runs: sleep 406 s (39 %), SAM 340 s (32 %), arm snaps 186 s (18 %), grid 55 s, UGREEN 43 s, side 19 s;
+plus ~40 s per run untimed (start-up). Only 3 of 16 runs touched: aborts cost more than any single item below.
+
+| # | Gain | Measured | Saving | Needs the robot to verify |
+|---|---|---|---|---|
+| S1 | Start-up: skip the lamp test when the last good setting is cached (it passed with (0, 254) in 12 of 13 runs); the first view checks it anyway | launch -> lamps median 19 s (7-31) | ~15 s/run | no (falls back to the test) |
+| S2 | Start-up: open both UGREENs in parallel and warm the bridge (first SSH read ~7 s) while they open | lamps -> first read 20-22 s, cameras open one after the other | ~6-8 s/run | no |
+| S3 | Start-up: cache each UGREEN's exposure step (lamps fixed), check the median, sweep only on a miss | 8 steps x 8 frames per camera | ~2-4 s/run | no |
+| S4 | Move durations sized to the move: `ms = 250 + 20 x pulses` (cap 1500) instead of 1500 ms for every placing move, 800 pan, 600 roll, 400 wrist | 92 placing moves, median 7.5 pulses, 34 of them <= 5 pulses, all at 1500 ms | ~7 s/run | yes: check the servos follow (shoulder lags) |
+| S5 | One arm frame per view instead of 3 averaged | 330 views, ~0.35 s each saved | ~7 s/run | yes: grid-pose repeatability with 1 frame |
+| S6 | Skip SAM in reties after small moves (roll, pan <= 2, placing <= 5 pulses) when the last retie matched >= 2: the model carry holds over a few pulses (R1-lite) | 166 reties at ~1.3 s; about half follow small moves | ~7 s/run | yes: carry error over small moves (retie-vote rows) |
+| S7 | Daemon (R6): cameras, SAM and bridge stay up between touches | start-up ~40 s per touch today | ~35 s/touch from the 2nd touch | no |
+
+Order: S1-S3 first (pure start-up, no motion change, ~25 s/run), then S4/S5 with one live check each, then S6, then S7.
+
+## 12. Larger scale (2026-10-29 night): markers and a measured base
+
+Constraints (user): no hardware changes; strafing stays, and larger base moves come with picking the needle from a
+holder. So base motion must be measured, not assumed, and the camera tie must survive any base move.
+
+Built (offline-tested; live checks need the printed markers):
+- S1 cached lamp setting (`evidence/descend/lamps.json`, `--lamp-test` forces the test), S2 both UGREENs open in
+  parallel + the bridge warmed meanwhile, S3 cached exposure step (`evidence/descend/exposure.json`, used if within
+  +-25 of target). Measured: camera opens 19.2 s sequential/sweep -> 12.5 s parallel/cached.
+- `tools/markers.py`: ArUco 4x4, 20 mm; ids 0-3 notebook, 10-13 needle holder, 20 robot chassis; A4 print sheet
+  (`python tools/markers.py sheet evidence/markers_a4.png`, 300 dpi, 50 mm check line); detection, rigid corner tie,
+  chassis pose from the printed size. Self-test: rendered pose within 1.75 mm, tie exact.
+- `model_jab`: marker tie first at the start, at every retie (no SAM then) and after a reach strafe; dots stay the
+  fallback; `base-pose` row from the chassis marker; strafe-back closed-loop on it (3 mm), time-based without it.
+- Dashboard draws detected markers (id + outline) in all three panels.
+
+Next (needs the robot): L2 arm calibration against overhead + side triangulation; L3 final approach closed on the
+external cameras; holder approach = drive near holder markers, measure base, calibrated arm, same final loop.
+
+### 12.1 L3, first part: the tracked descent (built, replay-tested)
+- A template tracker on the side view was rejected: near the paper it slid up the needle shaft (8-28 px from SAM; the
+  shaft looks the same along its length), and SAM's lowest needle pixel was the right one (checked on the frames).
+- Side tip by teal colour within 70 px of its last place: 1-5 px from SAM on 3 inked runs, ~14 ms vs ~350 ms; useless
+  on a dry tip and after ink smears on the paper. Gate: SAM takes over when there is no teal or the overhead and side
+  rays then miss by more than TRI_MISS_MM.
+- Wrist steps skip the arm-camera view when the triangulated height is valid (~0.7 s per step); the arm view and its
+  height remain the fallback. Replay of 170928: triangulated heights within 0.1 mm of the recorded run, touch reached.
+- Next parts (need the robot): final sideways correction from the overhead tip-dot vector at low hover (R4b); a
+  continuous slow wrist arc with frame-rate contact detection (R5).

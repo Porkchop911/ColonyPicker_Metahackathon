@@ -27,7 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import model_jab as mj  # noqa: E402
 
 COMPARE = ("matched", "target_mm", "tip_mm", "err_mm", "planned", "dot_minus_landing_mm", "lam_mm", "height_mm",
-           "wrist_land", "landing_mm", "fix_mm")
+           "wrist_land", "landing_mm", "fix_mm", "carry_err_mm")  # carry_err_mm: the retie-vote, when the replay lands
+# on a cube-less retie at all (it re-derives the vote from the same frames, so it should track the recorded one)
 
 
 class OutOfFrames(RuntimeError):
@@ -40,8 +41,10 @@ def frames(run: Path, log: list[dict]) -> tuple[list[Path], list[Path], list[Pat
     ug = sorted(run.glob("ug_[0-9][0-9][0-9].jpg"))
     if not ug:  # older run: ug_pre was never saved (the cube depth path fails on it either way), hover only the last
         ug = [run / "sam_ugreen0_cube.png", run / "sam_ugreen0_cube.png", run / "sam_ugreen.png", run / "hover_ugreen.jpg"]
-    side = [run / f"side_wrist_{r['wrist']}.jpg" for r in log if r["phase"] == "wrist"]
-    side += [run / f"side_contact_{r['extra']:02d}.jpg" for r in log if r["phase"] == "contact-step"]
+    side = sorted(run.glob("side_[0-9][0-9][0-9].jpg"))
+    if not side:  # before 2026-10-29 evening: only the descent's side frames, by name
+        side = [run / f"side_wrist_{r['wrist']}.jpg" for r in log if r["phase"] == "wrist"]
+        side += [run / f"side_contact_{r['extra']:02d}.jpg" for r in log if r["phase"] == "contact-step"]
     return arm, [p for p in ug if p.exists()], [p for p in side if p.exists()]
 
 
@@ -54,19 +57,22 @@ def replay(run: Path, out: Path, pose0: dict[int, int], extra: list[str]) -> lis
     state = dict(pose0)
     sent: list[dict] = []
 
-    def serve(seq: list[Path], what: str):
-        it = iter(seq)
+    def serve(seq: list[Path], what: str, repeat_last: bool = False):
+        it, last = iter(seq), [None]
 
         def next_frame(*_a, **_k) -> np.ndarray:
             try:
-                return cv2.imread(str(next(it)))
+                last[0] = cv2.imread(str(next(it)))
             except StopIteration:
-                raise OutOfFrames(f"replay: out of recorded {what} frames") from None
+                if not (repeat_last and last[0] is not None):
+                    raise OutOfFrames(f"replay: out of recorded {what} frames") from None
+                print(f"replay: {what} frame repeated (code reads more than the run recorded)", flush=True)
+            return last[0]
         return next_frame
 
     class FakeCamera:
-        def __init__(self, index: int = mj.Camera.__init__.__defaults__[0], settle_s: float = 0.0):
-            self.frame = serve(ug if index != mj.SIDE else side, "UGREEN" if index != mj.SIDE else "side")
+        def __init__(self, index: int = mj.Camera.__init__.__defaults__[0], settle_s: float = 0.0, **_):
+            self.frame = serve(ug if index != mj.SIDE else side, "UGREEN" if index != mj.SIDE else "side", True)
 
     def send(target: dict, ms: int = 0) -> None:
         state.update({int(k): int(v) for k, v in target.items()})
@@ -80,20 +86,33 @@ def replay(run: Path, out: Path, pose0: dict[int, int], extra: list[str]) -> lis
     mj.at.auto_light = lambda: [0, 254]
     mj.time = types.SimpleNamespace(sleep=lambda s: None, time=time.time, monotonic=time.monotonic,
                                     strftime=time.strftime)
-    sys.argv = ["model_jab.py", "--out", str(out), *(extra or ["--lam", "190", "--jab"])]
+    recorded = next((r["argv"] for r in log if r["phase"] == "args"), None)
+    if recorded:  # the run's own arguments, its --out and --stop-file left out
+        keep, skip = [], 0
+        for a in recorded.split():
+            if skip:
+                skip -= 1
+            elif a in ("--out", "--stop-file"):
+                skip = 1
+            else:
+                keep.append(a)
+        recorded = keep
+    sys.argv = ["model_jab.py", "--out", str(out), *(extra or recorded or ["--lam", "190", "--jab"])]
     try:
         mj.main()
     except OutOfFrames as error:
         print(error)
     except Exception as error:  # the recorded run may have aborted the same way
+        import traceback
         print("replay raised:", repr(error))
+        traceback.print_exc(limit=-4)
     newest = max(out.iterdir(), key=lambda p: p.stat().st_mtime)
     return json.loads((newest / "log.json").read_text())
 
 
 def compare(gold: list[dict], new: list[dict]) -> None:
     """Rows in order of phase; numbers compared field by field; stops at the first phase mismatch."""
-    skip = {"light", "pose0", "dots-filled", "retie-vote"}  # a filled dot is SAM missing one, judged by the rows after it
+    skip = {"args", "light", "pose0", "dots-filled", "retie-vote"}  # a filled dot is SAM missing one, judged by the rows after it
     g = [r for r in gold if r["phase"] not in skip]
     n = [r for r in new if r["phase"] not in skip]
     worst: dict[str, float] = {}
