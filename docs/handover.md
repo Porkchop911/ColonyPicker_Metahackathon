@@ -28,6 +28,18 @@ Details and every run: `docs/plan_speedup_2026-10-29.md` §9.
 | After | `python tools/arm_park.py <dir>` folds the arm up and back (needle clear of the paper) before power-off |
 | Open | 12 mm sideways start error in 2 of 5 runs (ties exact; differs only in pan 531-533 vs 520-524); side camera not metric (grid and dots not resolvable at its angle: raise it / tilt 15-20 deg down); next touch on a fresh dot to judge accuracy |
 
+## Before the next robot session (2026-10-29 night)
+
+| Step | Command |
+|---|---|
+| Robot on, then preflight (stops the watchdog, checks/restarts the arm camera, cameras, dots, side pose, ink, markers) | `<venv python> tools/preflight.py --sam --start` (or the dashboard's Preflight button) |
+| Before code goes onto the robot | `<venv python> tools/regress.py --out <scratch dir>` (4 recorded runs; FAIL on any Python error) |
+| Markers (optional, hand-drawn on the 5 mm grid) | `python tools/markers.py draw`: ids 8 and 19 on the notebook, id 5 on top of the robot base |
+| Arm model check (~3 min, robot on, arm at start, inked tip) | `<venv python> tools/arm_calibrate.py collect` then `fit`: measures the model's error; offsets only kept if known to 1.5 pulses (self-test: ~+-4-5 pulses with 40 poses, so expect none) |
+
+Offline findings: practice-arc landing predictions vs ink marks 1.2 / 1.9 mm (2 touches): a camera-driven final
+correction (R4b) would land ~1-2 mm, about today's level. Frame writes 3 ms (no gain from background writing).
+
 ## Session 2026-10-29 evening: plan section 10 cheap wins, red dots
 
 - Implemented (plan 10.8 "cheap wins"): dots-first tip depth (cube attempt removed), validated + lazy side rig,

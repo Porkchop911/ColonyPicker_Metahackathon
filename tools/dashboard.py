@@ -33,6 +33,7 @@ from rig_io import OVERHEAD, SIDE, SIDE_PAPER, Camera, reset_bridge, servo  # no
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT / "evidence" / "descend"
+PREFLIGHT_LOG = RUNS / "preflight.txt"
 STOP = RUNS / "stop.flag"
 CAMS = ("overhead", "side", "arm")
 SNAP_PX = 40  # a click this close to a detected dot picks that dot
@@ -194,17 +195,21 @@ class Rig:
             args = [py, "tools/arm_to_start.py", str(RUNS)]
         elif action == "park":
             args = [py, "tools/arm_park.py", str(RUNS)]
+        elif action == "preflight":
+            args = [py, "tools/preflight.py", "--sam"]
+            self.close_cams()  # it opens both UGREENs itself
         else:
             return f"unknown action {action}"
         self.action, self.run_dir, self.started = action, None, time.time()
-        self.proc = subprocess.Popen(args, cwd=ROOT)
+        self.proc = subprocess.Popen(args, cwd=ROOT, stdout=PREFLIGHT_LOG.open("w") if action == "preflight" else None,
+                                     stderr=subprocess.STDOUT if action == "preflight" else None)
         threading.Thread(target=self.wait, daemon=True).start()
         return f"{action} started"
 
     def wait(self) -> None:
         self.proc.wait()
         print(f"{self.action} finished: exit {self.proc.returncode}", flush=True)
-        if self.action == "run":
+        if self.action in ("run", "preflight"):
             self.open_cams()
 
     def stop(self) -> str:
@@ -305,6 +310,7 @@ img{display:block;width:100%;height:auto}#overhead{cursor:crosshair}
 <button class="go" onclick="act('run')">Run touch</button>
 <button class="stop" onclick="act('stop')">Stop</button>
 <button onclick="act('park')">Park</button>
+<button onclick="act('preflight')">Preflight</button>
 <span id="target">target: nearest dot to the landing point (click the overhead view to choose)</span>
 <span id="status">…</span></header>
 <main><div class="panel"><h2>Overhead (4K): black dots yellow, red dots magenta, cube cyan, tip red cross, target green</h2>
@@ -324,7 +330,8 @@ async function poll(){try{const s=await (await fetch('/state')).json();
 
 
 def row_text(r: dict) -> str:
-    keep = ("matched", "it", "round", "height_mm", "dot_minus_landing_mm", "fix_mm", "by", "miss_mm", "error", "side_down_px")
+    keep = ("matched", "it", "round", "height_mm", "tri_height_mm", "dot_minus_landing_mm", "fix_mm", "by", "miss_mm",
+            "markers", "rms_mm", "dots", "when", "across_ug_mm", "moved_mm", "residual_mm", "closed_loop", "error")
     parts = []
     for k in keep:
         if k in r and r[k] is not None:
@@ -350,7 +357,11 @@ def handler(rig: Rig):
             if self.path == "/":
                 return self.send(PAGE.encode(), "text/html; charset=utf-8")
             if self.path == "/state":
-                rows = [row_text(r) for r in rig.log_rows()[-14:]] if rig.action == "run" else []
+                if rig.action == "preflight" and PREFLIGHT_LOG.exists():  # its checklist, OK/FAIL per line
+                    rows = [ln for ln in PREFLIGHT_LOG.read_text(errors="replace").splitlines()
+                            if ln.startswith(("OK", "FAIL")) or "OK;" in ln or ln.endswith(" OK")][-16:]
+                else:
+                    rows = [row_text(r) for r in rig.log_rows()[-14:]] if rig.action == "run" else []
                 return self.send(json.dumps({"running": rig.running(), "action": rig.action, "rows": rows,
                                              "elapsed": round(time.time() - rig.started) if rig.started else 0,
                                              "target": rig.target}).encode(), "application/json")
