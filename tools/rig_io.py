@@ -22,15 +22,17 @@ ROBOT = "ubuntu@192.168.0.223"
 # the robot's platform environment (pre-existing control stack: ROS 2, servo driver) + our bridge
 BRIDGE = "source ~/hwr/deploy/env.zsh; python3 ~/colony/servo_bridge.py"
 EXPOSURE_TARGET = 140.0  # scene median the MSMF exposure lock aims for (ruling visible, lamps on)
+OVERHEAD = 1  # 4K UGREEN looking down at the sheet (2026-10-29)
+SIDE = 0      # the old 1080p UGREEN, low beside the sheet: sees the tip height above the paper
 
 
 class Camera:
     """UGREEN capture with a locked exposure and a draining reader thread."""
 
-    def __init__(self, index: int = 0, settle_s: float = 3.0):
-        self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():  # DirectShow can lose the device after a USB re-enumeration
-            self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
+    def __init__(self, index: int = OVERHEAD, settle_s: float = 1.0):
+        self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)  # DSHOW: 5 fps at 1080 on the 4K UGREEN, MSMF 30
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             raise RuntimeError(f"camera {index} does not open (DSHOW or MSMF)")
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -53,7 +55,7 @@ class Camera:
             for step in range(-3, -11, -1):
                 self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
                 self.cap.set(cv2.CAP_PROP_EXPOSURE, step)
-                for _ in range(4):
+                for _ in range(8):  # the 4K UGREEN lags ~4 frames behind an exposure change
                     ok, img = self.cap.read()
                 scores.append((abs(np.median(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)) - EXPOSURE_TARGET), step))
             value = min(scores)[1]

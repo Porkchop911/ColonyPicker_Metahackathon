@@ -44,7 +44,7 @@ MAX_MISS_MM = 3.0
 RIG = Path("evidence/tip/ugreen_rig.json")
 # the UGREEN's lens is hardware: calibrated once (the ruler-confirmed daylight frame) and reused, so a
 # moved UGREEN only re-solves its pose. Single-view self-calibration drifted f by ~1 % per view.
-LENS = Path("evidence/tip/ugreen_lens.json")
+LENS = Path("evidence/tip/ugreen4k_lens.json")  # the 4K overhead since 2026-10-29; ugreen_lens.json is the old 1080p, now the side camera
 
 
 def ray(px, k, d, r, t) -> tuple[np.ndarray, np.ndarray]:
@@ -353,7 +353,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=None, help="keep frames + JSON here")
     ap.add_argument("--recalibrate", action="store_true", help="redo the UGREEN rig (camera or sheet moved)")
     args = ap.parse_args()
-    ug = Camera(0).frame()
+    ug = Camera().frame()
     if args.recalibrate or not RIG.exists():
         rig = ugreen_rig(ug)
         RIG.parent.mkdir(parents=True, exist_ok=True)

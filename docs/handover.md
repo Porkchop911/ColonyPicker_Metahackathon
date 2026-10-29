@@ -1,4 +1,4 @@
-# Handover: colony picker, 2026-10-28 (midday)
+# Handover: colony picker, 2026-10-29 (afternoon)
 
 **Current plan: `docs/plan_2026-10-28.md`** (after `docs/rca_touch_dot.md`). The jab below was removed
 from `model_jab.py` on 2026-10-28; the final contact is the watched wrist arc.
@@ -12,6 +12,19 @@ from `model_jab.py` on 2026-10-28; the final contact is the watched wrist arc.
 | 3. Colony detection with light control | SAM 3.1 runs live on the UGREEN; Hue lamps are automated. Not tried on a plate. |
 | 4. Pick and transfer | Not started. |
 | 5. Classify | Not started. No Meta/Llama model call yet. |
+
+## Session 2026-10-29 (live): new cameras, side contact, 135 s touch
+
+Details and every run: `docs/plan_speedup_2026-10-29.md` §9.
+
+| Item | State |
+|---|---|
+| Cameras | **overhead = 4K UGREEN, index 1** (`rig_io.OVERHEAD`, lens `evidence/tip/ugreen4k_lens.json`, MSMF 1080p 31 fps); **side = old 1080p UGREEN, index 0** (`rig_io.SIDE`), low beside the sheet. `ugreen_dots.json` is in 4K-view pixels: `--dot/--red` take 4K-view pixels |
+| Best run | `20261029T125405`: touch in 135 s, stopped by the side camera (`side-still`); ink ~1.7 mm (low confidence, on an old mark). `20261029T120925`: ink 1.49 mm, clean round blot |
+| Before each run | re-ink the tip (one touch spends it); `python tools/arm_to_start.py <dir>` (start pose, elbow 190: `model_jab` lowers it measured to ~160); stop `sensor_supervisor_node` after any stack restart (by pid, see memory: `pgrep -f` over ssh matches its own shell) |
+| Run | `<hackathon venv python> tools/model_jab.py --out evidence/descend --lam 190 --jab` (no 590 s tool timeout: runs take 135-500 s) |
+| After | `python tools/arm_park.py <dir>` folds the arm up and back (needle clear of the paper) before power-off |
+| Open | 12 mm sideways start error in 2 of 5 runs (ties exact; differs only in pan 531-533 vs 520-524); side camera not metric (grid and dots not resolvable at its angle: raise it / tilt 15-20 deg down); next touch on a fresh dot to judge accuracy |
 
 ## Session 2026-10-28 (live): what changed in `model_jab.py`
 
