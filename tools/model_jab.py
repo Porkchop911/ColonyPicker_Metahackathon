@@ -313,6 +313,8 @@ def main() -> None:
         path = out / f"sam_{name}.png"
         cv2.imwrite(str(path), img)
         found = detect(predictor, str(path), "thin metal needle", 0.15)
+        if not found:  # backlit against the paper the needle reads black: "black stick" found it at 0.71 (202603)
+            found = detect(predictor, str(path), "black stick", 0.3)
         if not found:
             raise RuntimeError(f"SAM 3.1 found no needle in the {name} view")
         vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
@@ -349,13 +351,9 @@ def main() -> None:
         free = sam_needle_tip(img, "arm_tip", far_up=True)  # tip pixel at this roll; the angled needle moves with roll
         tip_cam = args.lam * at.unit_ray(free)  # the tip in the camera frame: rigid to the camera; depth set below
     except RuntimeError:
-        # the arm camera does not see the tip (a grasp from the holder can hide it): the last run's tip until the tie
-        # measures it with the overhead + side cameras
-        if not tip_file.exists():
-            raise
-        tip_cam = np.array(json.loads(tip_file.read_text()), float)
-        free = cv2.projectPoints(tip_cam.reshape(1, 3), np.zeros(3), np.zeros(3), tt.ARM_K, tt.ARM_D)[0].ravel()
-        note(phase="tip-cam", how="last-run", tip_cam=tip_cam)
+        # the arm camera does not see the tip (a sideways grasp ran it along the frame's edge, 2026-10-29 evening; a
+        # grasp from the holder can hide it): measured by the overhead + side cameras before the arm moves (below)
+        tip_cam = free = None
     cmd = {k: int(v) for k, v in read().items()}  # the one read-back; commands are built on `cmd` after this
     note(phase="pose0", pose=cmd)  # the replay (tools/replay_run.py) starts its fake arm here
 
@@ -454,6 +452,37 @@ def main() -> None:
         o, d = cam_rays(c[0])
         return (o + d * ((-CUBE_MM / 2 - o[2]) / d[2]))[:2]
 
+    def boot_tip_cam() -> np.ndarray:
+        """The tip in the arm camera's frame without the arm camera seeing it, at the (high) start pose: tie the arm view
+        to the UGREEN on the dots and the cube, solve the side camera, triangulate the tip from the UGREEN and the side
+        camera (SAM 3.1 on both), carry it into the arm camera's frame. No motion before this; a failure aborts."""
+        im_b, rot_b, t_b, _, _ = view(cmd)
+        ug_b = ugcam.frame()
+        rig_b = tt.ugreen_rig(ug_b)
+        kb, db, rb, tb = (np.array(rig_b[q]) for q in ("k", "d", "r", "t"))
+        red_b = sam_find(ug_b, "boot_red", "small red dot", RED_AREA, 1.0)
+        known_b = json.loads((args.out / "ugreen_dots.json").read_text())
+        ug_tie_b = np.array([tt.on_sheet(q, kb, db, rb, tb)[:2] for q in known_b + red_b.tolist()])
+        arm_mm_b = np.array([at.sheet_xy(q, rot_b, t_b) for q in arm_dots(im_b, "boot")]).reshape(-1, 2)
+        cu_b = cube_centre(ug_b, "boot_ugreen", lambda q: tt.ray(q, kb, db, rb, tb))
+        ca_b = cube_centre(im_b, "boot_arm", lambda q: (-rot_b.T @ t_b.ravel(), rot_b.T @ at.unit_ray(q)))
+        r_b, o_b, n_b = match_frames(ug_tie_b, arm_mm_b, cu_b, ca_b)
+        if n_b < 2:
+            raise RuntimeError(f"no tip in the arm view and the start tie matched {n_b} dot: cannot place the tip")
+        if sidecam is None:
+            raise RuntimeError("no tip in the arm view and no side camera: cannot place the tip")
+        s_b = side_pose(sidecam.frame(), ug_tie_b)
+        sk_b = tuple(np.array(s_b[q]) for q in ("k", "d", "r", "t"))
+        px_u = sam_needle_tip(ug_b, "boot_ugreen_tip", far_up=False)
+        px_s = sam_needle_tip(sidecam.frame(), "boot_side_tip", far_up=False)
+        p3, miss = tt.meet(tt.ray(px_u, kb, db, rb, tb), tt.ray(px_s, *sk_b))
+        if miss > TRI_MISS_MM or -p3[2] < 5.0:
+            raise RuntimeError(f"tip from overhead + side not trusted: rays miss {miss:.1f} mm, {-p3[2]:.1f} mm up")
+        tc = rot_b @ np.array([*(r_b @ p3[:2] + o_b), p3[2]]) + t_b.ravel()
+        note(phase="tip-cam", how="boot", tip_cam=tc, height_mm=float(-p3[2]), miss_mm=float(miss), matched=n_b,
+             side_dots=s_b["dots"])
+        return tc
+
     hold = [False]
     roll_sign, roll_last, arm_tip_px = [1], [None], [free]  # roll pulse direction shrinking +across; (|across| before, step) of the last roll
     rev_seen = [0, 0]  # (error sign, consecutive views with it): a pan/roll reversal needs 2 in a row first (below)
@@ -461,6 +490,10 @@ def main() -> None:
     strafed, pan_gain, first_pan = [0.0], [0.0], [0, 0.0]  # net strafe (s, +vy); d(side err)/d(pan pulse)
     chassis0, base_pose = [None], [lambda: None]  # the chassis marker's pose before any strafe, and how to measure it
     try:
+        if tip_cam is None:
+            tip_cam = boot_tip_cam()
+            free = cv2.projectPoints(tip_cam.reshape(1, 3), np.zeros(3), np.zeros(3), tt.ARM_K, tt.ARM_D)[0].ravel()
+            arm_tip_px[0] = free
         # rough depth first (cube-only tie, 180 deg as every tie today): the band loop below must not
         # lower the tip by a wrong (too short) depth into the paper
         send({3: cmd[3] + 8}, ms=800)  # a nudge up (elbow +) so the UGREEN finds the needle as what moved

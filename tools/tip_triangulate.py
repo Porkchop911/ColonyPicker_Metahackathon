@@ -100,7 +100,7 @@ def side_marks(img: np.ndarray, detect, path: Path) -> np.ndarray:
     return np.array(marks, float).reshape(-1, 2)
 
 
-def side_rig(side_px: np.ndarray, sheet_mm: np.ndarray, near_px: float = 12.0) -> dict:
+def side_rig(side_px: np.ndarray, sheet_mm: np.ndarray, near_px: float = 12.0, min_dots: int = 5) -> dict:
     """The side camera's pose in the overhead's sheet frame from marks it sees (`side_px`) and dots the overhead
     placed (`sheet_mm`, on the paper). Its grid numbering slips at that slant and the dots' colours do not separate
     there, so every 4-point correspondence is tried and the pose most marks agree with (to `near_px`: the lens fits
@@ -142,7 +142,7 @@ def side_rig(side_px: np.ndarray, sheet_mm: np.ndarray, near_px: float = 12.0) -
     # runner-up (every near pose the same pose refined) is a clean tie; a runner-up within one dot is not.
     runner = next(((c[0], c[1]) for c in cands[1:] if np.linalg.norm(cv2.Rodrigues(c[2])[0] - cv2.Rodrigues(r)[0]) > 0.02
                    or np.linalg.norm(c[3].ravel() - t.ravel()) > 5.0), None) if r is not None else None
-    if n < 5:
+    if n < min_dots:
         raise RuntimeError(f"side camera: only {n} dots agree on a pose")
     proj = cv2.projectPoints(obj, r, t, k, d)[0][:, 0]  # refined on every agreeing dot
     gap, pick = assigned(proj)

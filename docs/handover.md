@@ -28,6 +28,44 @@ Details and every run: `docs/plan_speedup_2026-10-29.md` §9.
 | After | `python tools/arm_park.py <dir>` folds the arm up and back (needle clear of the paper) before power-off |
 | Open | 12 mm sideways start error in 2 of 5 runs (ties exact; differs only in pan 531-533 vs 520-524); side camera not metric (grid and dots not resolvable at its angle: raise it / tilt 15-20 deg down); next touch on a fresh dot to judge accuracy |
 
+## Tomorrow: start here (written 2026-10-29 22:05, battery empty)
+
+**Branch `tipcam-external`** (not merged). Arm last seen lifted over the sheet, upright needle in the gripper with teal ink
+(the battery died; on power-up the arm may have sagged: park it first, `tools/arm_park.py`).
+
+### What was being tested: the upright grasp, teal tip down (user's test)
+The needle hangs nearly vertical below the gripper; the arm camera sees only its back end, so the usable tip comes from
+the overhead + side UGREENs (code on this branch: `tip_cam` from external triangulation, boot-time measurement before
+any motion, `black stick` SAM fallback). Results:
+
+| Finding | Detail |
+|---|---|
+| The tip must start over the **paper** | over the wood the pale teal reads the wood's hue (H 12-22); over the sheet both UGREENs find it |
+| Both UGREENs see the teal tip there | 21:13: tip 40.6/41.1 mm up from two side poses, rays meet within 0.08-0.73 mm |
+| Reach | the arm is near its forward limit: to move the tip over the sheet the needle was tilted (wrist), pose `{2: 409, 3: 180-195, 4: 356}` |
+| **Slack settle drop** | the first step down after moving up drops the tip ~10 mm (9-11 mm in 5 runs) whatever its size; afterwards the start pose itself sits lower |
+| 3.5x step response | model 3 mm steps moved the long needle's tip 8-11 mm; 1-pulse steps sit in the servo deadband (false 'still') |
+| Ink matters both ways | dry tip: no overhead detection (hue 20-29); thick fresh bulb: overhead and side pick points ~5 mm apart (rays miss 5-6 mm) and drips confuse |
+| **Touches happened** (side-only descent, `tools/upright_side_touch.py`) | try 5: contact detected late, ~5-8 mm teal streak (dragged); try 6: tip reached the same spot (end of that streak), little extra drag; both at side-view y ~365-385 after ~20 real moves |
+| Why contact is hard here | the side camera alone cannot tell descending from sliding toward it (both read 'down'); SAM's tip end flips +-6 px between the ink bulb and the metal |
+
+Contact rule now in `tools/upright_side_touch.py` (untested live, try 7 died with the battery): progress along the in-air
+direction, median of pairwise slopes over the last 6 real moves (>= 2 joint pulses each), contact under 0.4 x the in-air
+slope; offline on try 6 it stays quiet through the flips (min 2.0 vs threshold 1.65). Real contact data is still needed.
+
+### Next steps, in order
+1. Robot on -> `tools/preflight.py --sam` (stops the watchdog; the side pose may need the arm out of view).
+2. Re-ink thin (a film, no bulb), wipe drips under the tip.
+3. Run `<venv python> tools/upright_side_touch.py <existing scratch folder>` and **watch it**: it must stop on its own at
+   first contact; if it passes side y ~385, stop it (Ctrl-C) and lift (`send({3: elbow+20})`).
+4. Add the overhead sideways check (fresh thin ink): side slowing + overhead lateral motion = contact.
+5. Then decide the holder: the needle's presentation must put the sharp end over the paper and in both UGREENs' view.
+
+Other state: `tools/upright_touch_session.py` (persistent session: SAM/cameras loaded once, retries) uses the side pose
+from `evidence/tip/side_rig_frame.jpg` (the side camera without the needle in front; camera unmoved all evening, pose
+re-solved 131-136 mm up). `tip_triangulate.side_rig(..., min_dots=)` added. The main touch path (`model_jab.py`, angled
+needle, arm camera sees the tip) is unchanged on `cameras-side-contact-replay` apart from this branch's additions.
+
 ## Before the next robot session (2026-10-29 night)
 
 | Step | Command |
