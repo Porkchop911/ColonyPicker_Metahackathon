@@ -93,6 +93,7 @@ CONTACT_LAG = 6           # wrist read-back this far behind: backstop only; 2 an
 CONTACT_STILL_PX = 1.0    # the UGREEN teal tip moved less than this on 2 running 1-pulse steps: resting on the paper
 TRI_STOP_MM = 0.5         # the descent stops when the tip, triangulated from the overhead and side views, is this high:
                           # it read 0.08 mm at first contact while the arm camera read 1.25, which went 3 steps on and dragged (2026-10-29)
+ROLL_EXT_MM = 6.0         # a roll step moves the tip ~2-4 mm: a bigger external jump is a bad re-tie, the arm view decides
 TRI_MISS_MM = 3.0         # ... if the two rays pass this close (they missed by 0.4-1.4 mm in the air)
 SIDE_STILL_PX = 1.5       # side view: a 1-pulse wrist step moves the tip ~2.3 px down in the air; touching it went 4, 2, 1 (2026-10-29)
 WRIST_STEP = 3            # pulses per measured wrist step on the final arc
@@ -343,8 +344,18 @@ def main() -> None:
         return tip_cam
 
     img = snap(3)
-    free = sam_needle_tip(img, "arm_tip", far_up=True)  # tip pixel at this roll; the angled needle moves with roll
-    tip_cam = args.lam * at.unit_ray(free)  # the tip in the camera frame: rigid to the camera; depth set below
+    tip_file = args.out / "tip_cam.json"  # the last run's tip in the camera frame (tipcam-external branch)
+    try:
+        free = sam_needle_tip(img, "arm_tip", far_up=True)  # tip pixel at this roll; the angled needle moves with roll
+        tip_cam = args.lam * at.unit_ray(free)  # the tip in the camera frame: rigid to the camera; depth set below
+    except RuntimeError:
+        # the arm camera does not see the tip (a grasp from the holder can hide it): the last run's tip until the tie
+        # measures it with the overhead + side cameras
+        if not tip_file.exists():
+            raise
+        tip_cam = np.array(json.loads(tip_file.read_text()), float)
+        free = cv2.projectPoints(tip_cam.reshape(1, 3), np.zeros(3), np.zeros(3), tt.ARM_K, tt.ARM_D)[0].ravel()
+        note(phase="tip-cam", how="last-run", tip_cam=tip_cam)
     cmd = {k: int(v) for k, v in read().items()}  # the one read-back; commands are built on `cmd` after this
     note(phase="pose0", pose=cmd)  # the replay (tools/replay_run.py) starts its fake arm here
 
@@ -555,6 +566,26 @@ def main() -> None:
             except RuntimeError as error:
                 note(phase="side-rig-failed", when=when, error=str(error))
         solve_side("tie")
+
+        def tip_cam_ext(rot_, t_, off_):
+            """(tip in this arm view's camera frame, ray miss mm) from the overhead + side cameras, or None: the tip
+            triangulated in the UGREEN's sheet frame, carried into this arm view's sheet frame by the tie (rot_u,
+            off_), then into its camera by the grid pose (rot_, t_). The arm camera need not see the tip."""
+            if side_cam[0] is None:
+                return None
+            px_u = teal_tip(ugcam.frame())
+            try:
+                px_s = sam_needle_tip(sidecam.frame(), "side_tipcam", far_up=False)
+            except RuntimeError:
+                return None
+            if px_u is None:
+                return None
+            sk_ = tuple(np.array(side_cam[0][q]) for q in ("k", "d", "r", "t"))
+            p3, miss = tt.meet(tt.ray(px_u, uk, ud, ur, ut), tt.ray(px_s, *sk_))
+            if miss > TRI_MISS_MM:
+                return None
+            sheet_a = np.array([*(rot_u @ p3[:2] + off_), p3[2]])  # both sheet frames: z negative above the paper
+            return rot_ @ sheet_a + np.asarray(t_).ravel(), float(miss)
         try:
             cube_a = cube_centre(im, "arm", lambda q: (-rot.T @ t.ravel(), rot.T @ at.unit_ray(q)))
         except RuntimeError:  # out of the steeper view at the tie height: from the start frame, via the model
@@ -644,6 +675,12 @@ def main() -> None:
         # tip depth for this grasp, triangulated: the arm ray to the tip meets the UGREEN ray to it (the UGREEN
         # ray carried into this arm frame by the tie); a new or angled grasp moves the tip along its ray
         tip_cam = triangulate(ug_img, rig, rot, t, rot_u, off_u, tip_cam, "dots", ug0)
+        ext = tip_cam_ext(rot, t, off_u)
+        if ext is not None:  # the overhead + side cameras' tip, in this camera's frame: no arm-camera view of the tip
+            note(phase="tip-cam", how="external", diff_mm=float(np.linalg.norm(ext[0] - tip_cam)), miss_mm=ext[1],
+                 tip_cam=ext[0], arm_tip_cam=tip_cam)
+            tip_cam = ext[0]
+        tip_file.write_text(json.dumps(np.asarray(tip_cam).tolist()))
         note(phase="frames", ugreen_black_px=ug_px, arm_black_px=arm_px, matched=matched, rot_deg=float(
              np.degrees(np.arctan2(rot_u[1, 0], rot_u[0, 0]))), target_ugreen_px=tgt_px, target_mm=target)
         def arm_fwd(pose, a_):
@@ -778,13 +815,19 @@ def main() -> None:
                     settle({5: cmd[5] + d}, 600, 1.2)
                     cmd = {**cmd, 5: cmd[5] + d}
                     im, rot, t, blobs2, (a, b) = view(cmd)
-                    px_ = sam_needle_tip(im, f"arm_tip_roll{it}", far_up=True)
-                    if np.linalg.norm(px_ - arm_tip_px[0]) <= ROLL_PX_MAX:  # 8 pulses move it ~2 mm; a jump is SAM's mask end elsewhere
-                        tip_cam, arm_tip_px[0] = np.linalg.norm(tip_cam) * at.unit_ray(px_), px_
-                    else:
-                        note(phase="roll-tip-rejected", px=px_, kept=arm_tip_px[0])
                     shift, hits = tm.lattice_offset(blobs, blobs2)
                     target, blobs = retie(im, rot, t), blobs2
+                    # the rolled tip from the overhead + side cameras; this view's tie offset from the re-tied target
+                    ext = tip_cam_ext(rot, t, (target - ug_fix[0]) - tgt_mm @ rot_u.T)
+                    if ext is not None and np.linalg.norm(ext[0] - tip_cam) <= ROLL_EXT_MM:
+                        note(phase="roll-tip", how="external", moved_mm=float(np.linalg.norm(ext[0] - tip_cam)), miss_mm=ext[1])
+                        tip_cam = ext[0]
+                    else:
+                        px_ = sam_needle_tip(im, f"arm_tip_roll{it}", far_up=True)
+                        if np.linalg.norm(px_ - arm_tip_px[0]) <= ROLL_PX_MAX:  # 8 pulses move it ~2 mm; a jump is SAM's mask end elsewhere
+                            tip_cam, arm_tip_px[0] = np.linalg.norm(tip_cam) * at.unit_ray(px_), px_
+                        else:
+                            note(phase="roll-tip-rejected", px=px_, kept=arm_tip_px[0])
                     roll_last[0] = (abs(across), d)
                     roll_last_dir[0] = int(np.sign(d))
                     note(phase="roll-step", it=it, roll=cmd[5], step=d, side_before_mm=across)
