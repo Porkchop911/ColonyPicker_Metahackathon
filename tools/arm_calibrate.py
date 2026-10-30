@@ -273,7 +273,8 @@ def measure(top, side, det, urig, srig):
 COLLECT_N = 200     # poses (plan step 2)
 ANCHOR_EVERY = 20   # START again from +REPEAT_AWAY (gate 0's repeatable side; from below pan scatters 2.6 mm) every this many poses
 DRIFT_MM = 2.0      # an anchor this far from the first one twice in a row ends the run
-SAFE_MM = 25.0      # a pose or its pre-move the model puts lower than this (from the measured START height) is skipped
+SAFE_MM = 25.0      # a pose or its pre-move predicted lower than this (measured START height + measured slopes) is skipped
+PROBE = 10          # pulses per joint around START for the measured height slopes
 
 
 def approach_plan(qs: list[dict], seed: int = 1) -> list[tuple[dict, dict, dict]]:
@@ -320,14 +321,27 @@ def collect() -> None:
     try:
         send(START, ms=2500)
         time.sleep(2.0)
-        got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)  # side SAM misses ~1 in 5
-        if got is None:
-            raise RuntimeError("tip not found at START: ink the tip, check the lamps")
-        height = float(-got[0][2])
-        z0 = ca.tip_in_base(START, TIP_GUESS)[2]
-        low = lambda q: height + 1.5 * min(ca.tip_in_base(q, TIP_GUESS)[2] - z0, 0.0) < SAFE_MM  # noqa: E731
-        plan = low_plan(COLLECT_N, lambda q: ca.tip_in_base(q, TIP_GUESS)[2] - z0, height)
-        print(f"START tip {height:.1f} mm up; {len(plan)} poses", flush=True)
+        def height_at(q: dict) -> float:
+            """Measured tip height (mm) at q, approached from PROBE pulses above on every joint; side SAM misses ~1 in 5."""
+            send({**q, **{k: q[k] + PROBE for k in (1, 2, 3, 4)}}, ms=800)
+            time.sleep(0.8)
+            send(q, ms=800)
+            time.sleep(0.8 + REPEAT_DWELL)
+            got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)
+            if got is None:
+                raise RuntimeError("tip not found: ink the tip, check the lamps")
+            return float(-got[0][2])
+
+        # the guard's height slopes are measured, not modelled: TIP_GUESS put a wrist -19 pose ~70 mm up, it measured 24
+        # and the sweep hit 11.5 mm on pose 8 (2026-10-30). Linear over the ranges low_plan draws; MIN_HEIGHT_MM still stops it.
+        height = height_at(START)
+        slope = {k: (height_at({**START, k: START[k] + PROBE}) - height_at({**START, k: START[k] - PROBE})) / (2 * PROBE)
+                 for k in (1, 2, 3, 4)}
+        rise = lambda q: sum(slope[k] * (q[k] - START[k]) for k in slope)  # noqa: E731
+        low = lambda q: height + 1.5 * min(rise(q), 0.0) < SAFE_MM  # noqa: E731
+        plan = low_plan(COLLECT_N, rise, height)
+        print(f"START tip {height:.1f} mm up; slopes mm/pulse {{{', '.join(f'{k}: {v:+.2f}' for k, v in slope.items())}}}; "
+              f"{len(plan)} poses", flush=True)
         for i, (pre, q, sign) in enumerate(plan):
             if i % ANCHOR_EVERY == 0:
                 send({**START, **{k: START[k] + REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
