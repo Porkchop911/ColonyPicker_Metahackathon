@@ -229,3 +229,26 @@ START anchor every 20 poses stayed within 0.85 mm.
 - Faults found and fixed live (all in `tools/arm_calibrate.py`): side SAM misses ~half the frames (now background
   difference); old ink on the paper and box line art posed as the tip; the side pose needs the overhead's grid shift
   undone each run; the START-slope height guard was 2-6x off (now a plane refit on every measured pose).
+
+**Step 3, arm model, 2026-10-30 (`tools/arm_calibrate.py fit-arm`, `evidence/tip/arm_model.json`).** Nominal
+URDF + shoulder/elbow zero offsets + one direction offset per joint (`b_j * approach_j`), on commanded pulses, run 11:
+
+| Model, 5-fold blocks of the pose path held out | Median | p90 |
+|---|---|---|
+| nominal URDF tied to the sheet by the same data (in sample) | 8.1 mm | |
+| + offsets + direction terms, read-back pulses | 1.6 mm | 3.3 mm |
+| **+ offsets + direction terms, commanded pulses** | **1.8 mm** | **4.0 mm** |
+
+Direction terms (pulses per side): pan 4.8, shoulder -5.7, elbow -4.1, wrist -1.3; pan's 9.6-pulse gap is gate 0's
+pan slack, shoulder/elbow are the servos stopping short. Offsets: shoulder +19, elbow -40 (weakly identifiable:
+they trade against the tip; self-check recovers them to ~3 pulses, direction terms to 0.2). The two-stage model is
+not needed: commanded pulses with direction terms are within 0.2 mm of read-back.
+
+**Step 5:** `coarse_aim.py --calib evidence/tip/arm_model.json` applies only the arm terms in `camera_in_base` (all
+25 callers see them only when `coarse_aim.CALIB` is set) and approaches from 20 pulses above. Default unchanged:
+`tools/regress.py` 1/4 with and without the change, identical outcomes; the 3 fails are the committed
+`tipcam-external` code without AGREED step 1 (per-run `ugreen_dots.json`, uncommitted in the main checkout).
+
+**Step 6 (not done):** `arm_calibrate.py aim` (grid crossings at 60 mm, nominal vs calibrated in turn) ran 1 move
+before the robot had to charge: nominal, 12.1 mm off the crossing in xy. Next session: `aim`, then the 10 mm hover
+by measured placing, then a crossing touch.
