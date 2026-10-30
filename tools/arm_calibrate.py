@@ -8,6 +8,7 @@ overhead and side UGREENs over ~40 poses, so the arm model's 5-10 mm absolute er
     <hackathon venv python> tools/arm_calibrate.py repeat       gate 0: return-to-START scatter per joint and side (~10 min)
     <hackathon venv python> tools/arm_calibrate.py repeat-report FILE   its numbers and the go/stop verdict
     <hackathon venv python> tools/arm_calibrate.py fit-arm RUN...      arm terms (offsets, approach) -> arm_model.json
+    <hackathon venv python> tools/arm_calibrate.py aim          live A/B: nominal vs calibrated on grid crossings at 60 mm
 
 Unknowns: shoulder and elbow zero offsets (pulses, kept), the tip in the camera frame (changes with every grasp) and
 the base on the desk: yaw + position in the overhead's sheet frame (changes with every strafe). A pan offset is the same
@@ -662,26 +663,13 @@ def fit_file(path: Path) -> None:
 
 
 ARM_MODEL = Path("evidence/tip/arm_model.json")
-APPROACH = -1  # placing's final approach per joint: from REPEAT_AWAY above (gate 0's repeatable side, the anchor's)
-
-
-def arm_pulses(q: dict, terms: dict, sign: dict | None = None) -> dict:
-    """Pulses the nominal model should see for commanded `q`: shoulder/elbow zero offsets plus a direction offset
-    b_j * approach_j per joint (`sign` per joint, default APPROACH for all)."""
-    sign = sign or {}
-    out = {k: v + terms["b"][str(k)] * sign.get(k, APPROACH) for k, v in q.items() if str(k) in terms["b"]}
-    out[2] += terms["d2"]
-    out[3] += terms["d3"]
-    return {**q, **out}
-
-
 def arm_model(p: np.ndarray, qs: list[dict], signs: list[dict]) -> np.ndarray:
     """Tip in the sheet frame (mm): p = (d2, d3, b1-b4, tip_cam xyz, yaw, base xyz); arm terms as arm_pulses."""
     d2, d3, b1, b2, b3, b4, tx, ty, tz, yaw, bx, by, bz = p
     terms = {"d2": d2, "d3": d3, "b": {"1": b1, "2": b2, "3": b3, "4": b4}}
     c, s = np.cos(yaw), np.sin(yaw)
     rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]) @ np.diag([1.0, -1.0, -1.0])  # as model()
-    return np.array([rot @ ca.tip_in_base(arm_pulses(q, terms, sg), np.array([tx, ty, tz])) + [bx, by, bz]
+    return np.array([rot @ ca.tip_in_base(ca.arm_pulses(q, terms, sg), np.array([tx, ty, tz])) + [bx, by, bz]
                      for q, sg in zip(qs, signs)])
 
 
@@ -724,26 +712,113 @@ def fit_arm(paths: list[Path], key: str = "cmd", out_path: Path = ARM_MODEL) -> 
             p0[10:] = (seen - arm_model(p0, qs, signs)).mean(0)
             p, r = lm(p0, idx, 40, geometry)
             best = (np.median(r), p) if best is None or np.median(r) < best[0] else best
+    nominal, rn = lm(best[1], idx, 300, geometry)  # the nominal URDF tied to the sheet by the same data: A/B baseline
+    nominal, _ = lm(nominal, idx[rn <= np.percentile(rn, 90)], 300, geometry)
     p, r = lm(best[1], idx, 300, np.ones(13, bool))
     p, _ = lm(p, idx[r <= np.percentile(r, 90)], 300, np.ones(13, bool))
     r = np.linalg.norm(arm_model(p, qs, signs) - seen, axis=1)
+    rn = np.linalg.norm(arm_model(nominal, qs, signs) - seen, axis=1)
     out = {"d2": float(p[0]), "d3": float(p[1]), "b": {str(k): float(p[1 + k]) for k in (1, 2, 3, 4)},
-           "input": key, "approach": APPROACH, "poses": len(rows), "median_mm": float(np.median(r)),
+           "input": key, "approach": ca.APPROACH, "poses": len(rows), "median_mm": float(np.median(r)),
            "p90_mm": float(np.percentile(r, 90)), "tip_cam_mm": p[6:9].tolist(),  # record only: per grasp
+           # this session's tie to the cached side pose's sheet frame (tip, yaw, base): `aim` uses it, --calib does not
+           "session": p.tolist(), "nominal_session": nominal.tolist(), "nominal_median_mm": float(np.median(rn)),
            "runs": [str(x) for x in paths]}
     out_path.write_text(json.dumps(out, indent=1))
     print(f"arm model ({key}, {len(rows)} poses): d2 {p[0]:+.1f} d3 {p[1]:+.1f} pulses, b {np.round(p[2:6], 1).tolist()}; "
-          f"tip {np.median(r):.2f} mm median, {np.percentile(r, 90):.2f} p90 (in sample) -> {out_path}")
+          f"tip {np.median(r):.2f} mm median, {np.percentile(r, 90):.2f} p90 (in sample; nominal {np.median(rn):.2f}) "
+          f"-> {out_path}")
     return out
+
+
+AIM_HOVER_MM = 60.0  # A/B hover: mid-data (36-91 mm); 40 mm needed shoulder -60 pulses, outside the sampled range
+AIM_REACH_MM = 15.0  # crossings this far around the START footprint
+
+
+def aim_solve(p: np.ndarray, goal: np.ndarray, start: dict) -> tuple[dict, float]:
+    """Commanded pulses (joints 1-4) putting arm_model(p)'s tip at `goal` (sheet mm), approached from above: damped
+    Gauss-Newton as coarse_aim.solve. (pose, residual mm)."""
+    q = {k: float(v) for k, v in start.items()}
+    up = {k: ca.APPROACH for k in (1, 2, 3, 4)}
+
+    def tip(x: dict) -> np.ndarray:
+        return arm_model(p, [x], [up])[0]
+
+    for _ in range(40):
+        err = goal - tip(q)
+        if np.linalg.norm(err) < 0.05:
+            break
+        jac = np.column_stack([(tip({**q, k: q[k] + 1.0}) - tip({**q, k: q[k] - 1.0})) / 2.0 for k in (1, 2, 3, 4)])
+        step = jac.T @ np.linalg.solve(jac @ jac.T + 1e-2 * np.eye(3), err)
+        for i, k in enumerate((1, 2, 3, 4)):
+            q[k] += float(np.clip(step[i], -20.0, 20.0))
+    return {k: int(round(v)) for k, v in q.items()}, float(np.linalg.norm(goal - tip(q)))
+
+
+def aim(n: int = 10) -> None:
+    """Plan step 6, live A/B: grid crossings around the START footprint at AIM_HOVER_MM, the nominal URDF (tied to the
+    sheet by the same data) and the calibrated model in turn, order flipped every pair; each move from 20 pulses above,
+    the tip measured by both cameras. Reports |measured - goal| for each."""
+    from tip_descend import read, send
+    model_json = json.loads(ARM_MODEL.read_text())
+    models = {"nominal": np.array(model_json["nominal_session"]), "calibrated": np.array(model_json["session"])}
+    top, side, det, urig, srig = cameras()
+    bg = side_background(side)
+    up = {k: ca.APPROACH for k in (1, 2, 3, 4)}
+    start_xy = arm_model(models["calibrated"], [START], [up])[0][:2]
+    rng = np.random.default_rng(int(time.time()) % 100000)
+    cross = [np.round(start_xy / 5.0) * 5.0 + 5.0 * np.array([i, j]) for i in range(-3, 4) for j in range(-3, 4)]
+    cross = [c for c in cross if np.linalg.norm(c - start_xy) <= AIM_REACH_MM]
+    targets = [cross[i] for i in rng.choice(len(cross), min(n, len(cross)), replace=False)]
+    out = Path(f"evidence/tip/arm_aim_{time.strftime('%Y%m%dT%H%M%S')}.json")
+    rows = []
+    try:
+        for i, xy in enumerate(targets):
+            goal = np.array([xy[0], xy[1], -AIM_HOVER_MM])  # sheet z is negative above the paper
+            for name in (("nominal", "calibrated") if i % 2 == 0 else ("calibrated", "nominal")):
+                q, resid = aim_solve(models[name], goal, START)
+                if resid > 1.0 or max(abs(q[k] - START[k]) for k in (1, 2, 3, 4)) > 60:
+                    print(f"{i} {name}: no solution near START ({resid:.1f} mm)", flush=True)
+                    continue
+                send({**q, **{k: q[k] - ca.APPROACH * REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
+                time.sleep(1.0)
+                send(q, ms=800)
+                time.sleep(0.8 + REPEAT_DWELL)
+                got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
+                if got is None or got[1] > MISS_MM:
+                    print(f"{i} {name}: tip not measured", flush=True)
+                    continue
+                err = got[0] - goal
+                print(f"{i} {name}: goal {goal.round(1).tolist()} cmd {[q[k] for k in (1, 2, 3, 4)]} "
+                      f"error xy {np.linalg.norm(err[:2]):.2f} mm, z {err[2]:+.2f} mm", flush=True)
+                rows.append({"target": i, "model": name, "goal_mm": goal.tolist(), "cmd": {str(k): v for k, v in q.items()},
+                             "read": {str(k): int(v) for k, v in read().items()}, "tip_mm": got[0].tolist(),
+                             "miss_mm": got[1], "error_mm": err.tolist()})
+                send({**START, 3: START[3] + 20}, ms=1000)  # lift between attempts
+                time.sleep(1.2)
+    finally:
+        send({3: START[3] + 40}, ms=1200)
+        time.sleep(1.5)
+        top.close()
+        side.close()
+        SCRATCH.unlink(missing_ok=True)
+        out.write_text(json.dumps(rows, indent=1))
+        for name in models:
+            e = np.array([r["error_mm"] for r in rows if r["model"] == name]).reshape(-1, 3)
+            if len(e):
+                xy = np.linalg.norm(e[:, :2], axis=1)
+                print(f"{name}: {len(e)} moves, xy error median {np.median(xy):.2f} mm, max {xy.max():.2f}; "
+                      f"z median {np.median(e[:, 2]):+.2f} mm", flush=True)
+        print(f"saved {out}", flush=True)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "selftest", "repeat", "repeat-report"))
+    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "aim", "selftest", "repeat", "repeat-report"))
     ap.add_argument("data", nargs="*", type=Path, default=[DATA])
     args = ap.parse_args()
     {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data[0]), "repeat": repeat,
-     "fit-arm": lambda: fit_arm(args.data),
+     "fit-arm": lambda: fit_arm(args.data), "aim": aim,
      "repeat-report": lambda: repeat_report(args.data[0])}[args.cmd]()
 
 
