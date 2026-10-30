@@ -177,6 +177,16 @@ def cameras():
     det = lambda path, q, th: sam.detect(predictor, path, q, th)  # noqa: E731
     top, side = Camera(OVERHEAD), Camera(SIDE, paper_target=SIDE_PAPER)
     img = top.frame()
+    import plate_rig as prig
+    if prig.TOP_CACHE.exists():  # tilted overhead since 2026-10-30: both poses from plate_rig.py, no ink dots
+        fits = prig.check(img)
+        if fits < prig.CHECK_MIN:
+            raise RuntimeError(f"cached overhead pose fits {fits} crossings (< {prig.CHECK_MIN}): camera moved? "
+                               f"rerun tools/plate_rig.py")
+        rigs = [json.loads(p.read_text()) for p in (prig.TOP_CACHE, prig.SIDE_CACHE)]
+        print(f"cached poses: overhead {fits} crossings on the lattice, side camera "
+              f"{-rigs[1]['centre_mm'][2]:.0f} mm up", flush=True)
+        return top, side, det, *(tuple(np.array(r[q]) for q in ("k", "d", "r", "t")) for r in rigs)
     rig = tt.ugreen_rig(img)
     urig = tuple(np.array(rig[q]) for q in ("k", "d", "r", "t"))
     cv2.imwrite(str(SCRATCH), img)
