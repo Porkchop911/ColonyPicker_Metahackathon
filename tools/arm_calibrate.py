@@ -426,7 +426,7 @@ def collect() -> None:
             a = np.column_stack([np.ones(len(seen_q)), np.array(seen_q, float) - [START[k] for k in (1, 2, 3, 4)]])
             coef = np.linalg.lstsq(a, np.array(seen_h), rcond=None)[0]
             return float(coef @ np.r_[1.0, [q[k] - START[k] for k in (1, 2, 3, 4)]])
-        plan = low_plan(COLLECT_N, rise, height)
+        plan = low_plan(COLLECT_N, rise, height, seed=int(time.time()) % 100000)  # new poses each run
         print(f"START tip {height:.1f} mm up; slopes mm/pulse {{{', '.join(f'{k}: {v:+.2f}' for k, v in slope.items())}}}; "
               f"{len(plan)} poses", flush=True)
         for i, (pre, q, sign) in enumerate(plan):
