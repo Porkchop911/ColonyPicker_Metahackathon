@@ -51,7 +51,7 @@ No model or controller beats this, so it decides whether steps 2-6 run. The meta
 - Static noise: arm still, 30 frames per camera (30 side SAM runs, ~1 min; 100 is not needed for a
   sigma) -> sigma of the triangulated tip.
 - One joint at a time; the other joints stay put. Per joint (pan, elbow, wrist), from 1 hover pose
-  (tip 30-50 mm up): 10 arrivals from +30 pulses, 10 from -30, alternating so drift does not line up
+  (START, tip ~45-70 mm up): 10 arrivals from +20 pulses, 10 from -20, alternating so drift does not line up
   with side. Servo 2: 5 + 5. That is 70 arrivals at ~4 s = ~5 min; a second and third pose only if
   time allows.
 - Each arrival logs commanded and read-back pulses, previous position, dwell time.

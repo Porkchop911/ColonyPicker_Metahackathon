@@ -5,6 +5,8 @@ overhead and side UGREENs over ~40 poses, so the arm model's 5-10 mm absolute er
     <hackathon venv python> tools/arm_calibrate.py collect      robot on, arm at the start pose, inked tip (~3 min)
     <hackathon venv python> tools/arm_calibrate.py fit [DATA]   fit and write evidence/tip/arm_offsets.json
     <hackathon venv python> tools/arm_calibrate.py selftest     the fit on synthetic data with known offsets
+    <hackathon venv python> tools/arm_calibrate.py repeat       gate 0: return-to-START scatter per joint and side (~10 min)
+    <hackathon venv python> tools/arm_calibrate.py repeat-report FILE   its numbers and the go/stop verdict
 
 Unknowns: shoulder and elbow zero offsets (pulses, kept), the tip in the camera frame (changes with every grasp) and
 the base on the desk: yaw + position in the overhead's sheet frame (changes with every strafe). A pan offset is the same
@@ -119,49 +121,77 @@ def selftest() -> None:
     assert all(abs(p[i] - truth[i]) <= 3 * sd[i] + 0.5 for i in (0, 1)), (p[:2], sd[:2], truth[:2])
     print(f"arm_calibrate self-check ok: offsets {np.round(p[:2], 2)} +- {np.round(sd[:2], 2)} (true {truth[:2]}), "
           f"rms {rms:.2f} mm; used: {[bool(sd[i] <= USE_SIGMA) for i in (0, 1)]}")
+    # gate 0 stats: each side's cluster 1 mm off centre along x (a 2 mm gap), 0.3 mm noise per axis
+    rows = [{"static": True, "tip_mm": rng.normal(0.0, 0.1, 3).tolist(), "miss_mm": 0.5} for _ in range(STATIC_N)]
+    for j, s, dwell in repeat_plan():
+        tip = np.array([s * 1.0, 0.0, -50.0]) + rng.normal(0.0, 0.3, 3) + (s * 0.5 if dwell == SHORT_DWELL else 0.0)
+        rows.append({"joint": j, "side": s, "dwell_s": dwell, "tip_mm": tip.tolist(), "miss_mm": 0.5})
+    stats = repeat_stats(rows)
+    for j in REPEAT_JOINTS:
+        r = stats[str(j)]
+        assert r["gap_90"][0] - 0.3 <= 2.0 <= r["gap_90"][1] + 0.3, (j, r)
+        assert 0.3 <= r["creep_mm"] <= 1.0, (j, r)
+    assert 0.3 <= stats["worst_scatter_mm"] <= 1.0 and stats["verdict"].startswith("go"), stats
+    print(f"gate-0 stats self-check ok: gap {stats['1']['gap_mm']:.2f} mm (true 2.0), worst scatter "
+          f"{stats['worst_scatter_mm']:.2f} mm (true 0.52), verdict '{stats['verdict']}'")
 
 
-def collect() -> None:
-    """Drive the poses, triangulate the inked tip at each (overhead teal tip + side SAM tip), save the data."""
+SCRATCH = Path("evidence/tip/_cal.png")
+
+
+def cameras():
+    """Overhead + side cameras with their poses in the overhead's sheet frame, and SAM: (top, side, det, urig, srig)."""
     import base64  # noqa: F401  (robot I/O only here)
     import markers  # noqa: F401
     import model_jab as mj
     import sam_detect as sam
     import tip_triangulate as tt
     from rig_io import OVERHEAD, SIDE, SIDE_PAPER, Camera
-    from tip_descend import read, send
-    import dashboard as dash
     predictor = sam.load()
     det = lambda path, q, th: sam.detect(predictor, path, q, th)  # noqa: E731
     top, side = Camera(OVERHEAD), Camera(SIDE, paper_target=SIDE_PAPER)
-    scratch = Path("evidence/tip/_cal.png")
     img = top.frame()
     rig = tt.ugreen_rig(img)
-    uk, ud, ur, ut = (np.array(rig[q]) for q in ("k", "d", "r", "t"))
-    cv2.imwrite(str(scratch), img)
-    red = [d["centroid"] for d in det(str(scratch), "small red dot", mj.SAM_THRESHOLD)
+    urig = tuple(np.array(rig[q]) for q in ("k", "d", "r", "t"))
+    cv2.imwrite(str(SCRATCH), img)
+    red = [d["centroid"] for d in det(str(SCRATCH), "small red dot", mj.SAM_THRESHOLD)
            if d["centroid"] and mj.RED_AREA[0] <= d["area"] <= mj.RED_AREA[1]]
     known = json.loads(Path("evidence/descend/ugreen_dots.json").read_text())
-    sheet = np.array([tt.on_sheet(q, uk, ud, ur, ut)[:2] for q in known + red])
-    srig = tt.side_rig(tt.side_marks(side.frame(), det, scratch), sheet)
-    sk = tuple(np.array(srig[q]) for q in ("k", "d", "r", "t"))
+    sheet = np.array([tt.on_sheet(q, *urig)[:2] for q in known + red])
+    srig = tt.side_rig(tt.side_marks(side.frame(), det, SCRATCH), sheet)
     print(f"side pose: {srig['dots']} dots, {srig['rms']:.1f} px", flush=True)
+    return top, side, det, urig, tuple(np.array(srig[q]) for q in ("k", "d", "r", "t"))
+
+
+def measure(top, side, det, urig, srig):
+    """Inked tip in the sheet frame (mm, z down) by overhead teal tip + side SAM tip: (p3, miss mm), or None."""
+    import dashboard as dash
+    import tip_triangulate as tt
+    ug_px = dash.teal_tip(top.frame())
+    cv2.imwrite(str(SCRATCH), side.frame())
+    found = det(str(SCRATCH), "thin metal needle", 0.15)
+    if ug_px is None or not found:
+        print(f"tip not found (overhead {ug_px is not None}, side {bool(found)})", flush=True)
+        return None
+    vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
+    k = int(np.argmax(vs))
+    return tt.meet(tt.ray(np.array(ug_px), *urig), tt.ray(np.array([us[k], vs[k]], float), *srig))
+
+
+def collect() -> None:
+    """Drive the poses, triangulate the inked tip at each (overhead teal tip + side SAM tip), save the data."""
+    from tip_descend import read, send
+    top, side, det, urig, srig = cameras()
     rows = []
     try:
         for i, q in enumerate(poses()):
             send(q, ms=1200)
             time.sleep(1.6)
             now = read()
-            ug_px = dash.teal_tip(top.frame())
-            sf = side.frame()
-            cv2.imwrite(str(scratch), sf)
-            found = det(str(scratch), "thin metal needle", 0.15)
-            if ug_px is None or not found:
-                print(f"{i:2d} tip not found (overhead {ug_px is not None}, side {bool(found)})", flush=True)
+            got = measure(top, side, det, urig, srig)
+            if got is None:
                 continue
-            vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
-            k = int(np.argmax(vs))
-            p3, miss = tt.meet(tt.ray(np.array(ug_px), uk, ud, ur, ut), tt.ray(np.array([us[k], vs[k]], float), *sk))
+            p3, miss = got
             print(f"{i:2d} pulses {now} tip {np.round(p3, 1)} miss {miss:.1f} mm", flush=True)
             if miss <= 3.0:
                 rows.append({"pulses": {str(j): int(now[j]) for j in (1, 2, 3, 4, 5)}, "tip_mm": p3.tolist(), "miss_mm": miss})
@@ -173,9 +203,136 @@ def collect() -> None:
         time.sleep(1.5)
         top.close()
         side.close()
-        scratch.unlink(missing_ok=True)
+        SCRATCH.unlink(missing_ok=True)
         DATA.write_text(json.dumps(rows, indent=1))
         print(f"{len(rows)} poses saved to {DATA}", flush=True)
+
+
+# Gate 0 (docs/plan_2026-10-30_arm_calibration.md): how well the arm returns to one pose, per joint and approach side
+REPEAT_JOINTS = {1: 10, 3: 10, 4: 10, 2: 5}  # arrivals per side; servo 2 fewer (it sticks rising, slow to test)
+REPEAT_AWAY = 20      # pulses: the joint leaves this far to one side, then returns (> the widest gap seen, 5 pulses)
+REPEAT_DWELL = 1.6    # s after the move, as in collect
+SHORT_DWELL = 0.4     # s: AGREED S2's shortest settle; creep between the two is measured
+SHORT_N = 5           # short-dwell arrivals per joint
+STATIC_N = 30         # still measurements: the cameras' own noise
+TIP_GUESS = np.array([0.0, 25.0, 200.0])  # tip in the camera frame, mm (fit's start value): only for the height guard
+
+
+def repeat_plan() -> list[tuple[int, int, float]]:
+    """(joint, side, dwell) arrivals: sides alternate so drift does not line up with a side; short dwells last."""
+    plan = []
+    for j, n in REPEAT_JOINTS.items():
+        plan += [(j, s, REPEAT_DWELL) for _ in range(n) for s in (1, -1)]
+        plan += [(j, (1, -1)[i % 2], SHORT_DWELL) for i in range(SHORT_N)]
+    return plan
+
+
+def drop_mm(j: int, side: int) -> float:
+    """How far the nominal model lowers the tip at START with joint j REPEAT_AWAY pulses to `side` (mm, + = down)."""
+    away = {**START, j: START[j] + side * REPEAT_AWAY}
+    return float(ca.tip_in_base(START, TIP_GUESS)[2] - ca.tip_in_base(away, TIP_GUESS)[2])
+
+
+def repeat() -> None:
+    """Gate 0 on the robot: still frames, then each joint leaves START to either side and returns, tip measured each time."""
+    from tip_descend import read, send
+    out = Path(f"evidence/tip/arm_repeat_{time.strftime('%Y%m%dT%H%M%S')}.json")
+    top, side, det, urig, srig = cameras()
+    rows = []
+    try:
+        send(START, ms=2500)
+        time.sleep(2.0)
+        for i in range(STATIC_N):
+            got = measure(top, side, det, urig, srig)
+            if got is not None:
+                rows.append({"static": True, "tip_mm": got[0].tolist(), "miss_mm": got[1], "t": time.time()})
+        heights = [-r["tip_mm"][2] for r in rows]
+        if not heights:
+            raise RuntimeError("tip not found at START: ink the tip, check the lamps")
+        height = float(np.median(heights))
+        print(f"START: tip {height:.1f} mm up, {len(heights)}/{STATIC_N} still frames", flush=True)
+        # the far side must keep the tip >= MIN_HEIGHT_MM even if the model's drop is 1.5x off (no low open-loop poses)
+        unsafe = {(j, s) for j in REPEAT_JOINTS for s in (1, -1) if height - 1.5 * max(drop_mm(j, s), 0.0) < MIN_HEIGHT_MM}
+        for j, s in sorted(unsafe):
+            print(f"skipping joint {j} side {s:+d}: the model drops the tip {drop_mm(j, s):.1f} mm", flush=True)
+        for i, (j, s, dwell) in enumerate(repeat_plan()):
+            if (j, s) in unsafe:
+                continue
+            away = {**START, j: START[j] + s * REPEAT_AWAY}
+            send(away, ms=800)
+            time.sleep(0.8)
+            prev = read()
+            send(START, ms=800)
+            time.sleep(0.8 + dwell)
+            now = read()
+            got = measure(top, side, det, urig, srig)
+            if got is None:
+                continue
+            p3, miss = got
+            print(f"{i:3d} joint {j} side {s:+d} dwell {dwell} tip {np.round(p3, 1)} miss {miss:.1f} mm", flush=True)
+            rows.append({"joint": j, "side": s, "dwell_s": dwell, "cmd": {str(k): v for k, v in START.items()},
+                         "read": {str(k): int(now[k]) for k in START}, "prev": {str(k): int(prev[k]) for k in START},
+                         "tip_mm": p3.tolist(), "miss_mm": miss, "t": time.time()})
+            if -p3[2] < MIN_HEIGHT_MM:
+                print(f"tip {-p3[2]:.1f} mm up: stopping", flush=True)
+                break
+    finally:
+        send({3: START[3] + 40}, ms=1200)  # elbow up, away from the paper
+        time.sleep(1.5)
+        top.close()
+        side.close()
+        SCRATCH.unlink(missing_ok=True)
+        out.write_text(json.dumps(rows, indent=1))
+        print(f"{len(rows)} rows saved to {out}; next: arm_calibrate.py repeat-report {out}", flush=True)
+
+
+def scatter(p: np.ndarray) -> float:
+    """RMS 3D distance to the centroid (mm)."""
+    return float(np.sqrt(np.mean(np.sum((p - p.mean(0)) ** 2, 1)))) if len(p) > 1 else float("nan")
+
+
+def repeat_stats(rows: list[dict], boots: int = 1000, seed: int = 0) -> dict:
+    """Per joint: same-side scatter, side gap (mm, pulses via the nominal model, bootstrap 90 %), short-dwell creep."""
+    rng = np.random.default_rng(seed)
+    ok = [r for r in rows if r["miss_mm"] <= 3.0]
+    out = {"static_mm": scatter(np.array([r["tip_mm"] for r in ok if r.get("static")]))}
+    for j in REPEAT_JOINTS:
+        arm = {s: np.array([r["tip_mm"] for r in ok if r.get("joint") == j and r["side"] == s and r["dwell_s"] == REPEAT_DWELL])
+               for s in (1, -1)}
+        res = {"n": {str(s): len(arm[s]) for s in arm}, "scatter_mm": {str(s): scatter(arm[s]) for s in arm}}
+        if all(len(arm[s]) >= 3 for s in arm):
+            gap = lambda a, b: float(np.linalg.norm(a.mean(0) - b.mean(0)))  # noqa: E731
+            boot = [gap(arm[1][rng.integers(0, len(arm[1]), len(arm[1]))], arm[-1][rng.integers(0, len(arm[-1]), len(arm[-1]))])
+                    for _ in range(boots)]
+            per_pulse = float(np.linalg.norm(ca.tip_in_base({**START, j: START[j] + 1}, TIP_GUESS) - ca.tip_in_base(START, TIP_GUESS)))
+            g = gap(arm[1], arm[-1])
+            res.update(gap_mm=g, gap_90=[float(np.percentile(boot, 5)), float(np.percentile(boot, 95))],
+                       gap_pulses=g / per_pulse, mm_per_pulse=per_pulse)
+            short = [r for r in ok if r.get("joint") == j and r["dwell_s"] == SHORT_DWELL]
+            if short:
+                res["creep_mm"] = float(np.mean([np.linalg.norm(np.array(r["tip_mm"]) - arm[r["side"]].mean(0)) for r in short]))
+        out[str(j)] = res
+    worst = np.nanmax([v for j in REPEAT_JOINTS for v in out[str(j)]["scatter_mm"].values()] + [np.nan])
+    out["worst_scatter_mm"] = float(worst)
+    out["verdict"] = ("no data" if np.isnan(worst) else "go: calibrate" if worst <= 0.5 else
+                      "go, tight for a 1 mm mark" if worst <= 1.0 else "stop: no model meets the 1 mm gate")
+    return out
+
+
+def repeat_report(path: Path) -> None:
+    stats = repeat_stats(json.loads(path.read_text()))
+    print(f"still: {stats['static_mm']:.2f} mm RMS")
+    for j in REPEAT_JOINTS:
+        r = stats[str(j)]
+        line = f"joint {j}: n {r['n']}, scatter +{r['scatter_mm']['1']:.2f} / -{r['scatter_mm']['-1']:.2f} mm"
+        if "gap_mm" in r:
+            line += (f", side gap {r['gap_mm']:.2f} mm [{r['gap_90'][0]:.2f}, {r['gap_90'][1]:.2f}]"
+                     f" = {r['gap_pulses']:.1f} pulses at {r['mm_per_pulse']:.2f} mm/pulse")
+        if "creep_mm" in r:
+            line += f", {SHORT_DWELL} s dwell off by {r['creep_mm']:.2f} mm"
+        print(line)
+    print(f"worst same-side scatter {stats['worst_scatter_mm']:.2f} mm -> {stats['verdict']}")
+    path.with_suffix(".report.json").write_text(json.dumps(stats, indent=1))
 
 
 def fit_file(path: Path) -> None:
@@ -197,10 +354,11 @@ def fit_file(path: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=("collect", "fit", "selftest"))
+    ap.add_argument("cmd", choices=("collect", "fit", "selftest", "repeat", "repeat-report"))
     ap.add_argument("data", nargs="?", type=Path, default=DATA)
     args = ap.parse_args()
-    {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data)}[args.cmd]()
+    {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data), "repeat": repeat,
+     "repeat-report": lambda: repeat_report(args.data)}[args.cmd]()
 
 
 if __name__ == "__main__":
