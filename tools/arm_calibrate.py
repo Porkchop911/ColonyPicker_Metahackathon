@@ -903,7 +903,7 @@ MEMORY = Path("evidence/tip/hover_memory.json")  # goal -> {height mm: correctio
 HOVER_GOAL = (-5.0, 45.0)  # open-paper crossing nearest in joint motion (58 pulses from START), seen by both cameras
 
 
-TOUCH_STEPS_MM = (8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0)  # below 10 mm: one try each, xy corrected
+TOUCH_STEPS_MM = (8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0)  # below 10 mm: one try each, xy corrected
 TOUCH_XY_MM = 2.0   # best try off the crossing by more than this below 10 mm: lift instead of dotting the wrong place
 TOUCH_GOOD_MM = 1.0  # a try this close goes on down
 CONTACT_MM = 0.3    # a commanded mm down that moves the tip less than this: it is on the paper
@@ -978,7 +978,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
     poses = {float(h[1:]): {int(j): v for j, v in c.items()} for h, c in memory.get(key, {}).items() if h.startswith("q")}
     # with a last run to start from, the first try per height lands close: skip 40 / 25 mm and the odd touch steps (wet
     # ink lasts minutes; the full descent took ~6 min to the paper, 2026-10-30)
-    steps, touch_steps = ((15.0, 10.0), (6.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0)) if known else (HOVER_STEPS_MM, TOUCH_STEPS_MM)
+    steps, touch_steps = ((15.0, 10.0), (6.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0)) if known else (HOVER_STEPS_MM, TOUCH_STEPS_MM)
     try:
         anchor(models, top, side, det, urig, srig, bg)
         printed, hom, cross = local_crossing(grid_frame, urig, goal_xy)
@@ -1059,6 +1059,14 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                     tries = [(0.0, dict(q), None, tried_corr)]
                     break
                 err = got[0] - goal
+                if np.linalg.norm(err[:2]) > 3.0 and h <= 2.0:
+                    # a reading this far off near the paper paired an old ink spot (10.95 mm "off", then a 10 mm
+                    # "correction" that touched the wrong place, 2026-10-30): treat as not seen, no correction
+                    blind += 1
+                    print(f"touch {h:+.0f} mm: reading {np.linalg.norm(err[:2]):.1f} mm off ignored, going on blind",
+                          flush=True)
+                    tries = [(0.0, dict(q), None, tried_corr)]
+                    break
                 tries.append((float(np.linalg.norm(err[:2])), dict(q), got, tried_corr))
                 rows.append({"touch_mm": h, "attempt": attempt, "goal_mm": goal.tolist(), "corr_mm": corr.tolist(),
                              "cmd": {str(k): v for k, v in q.items()}, "read": {str(k): int(v) for k, v in read().items()},
@@ -1069,7 +1077,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                     break
                 corr[:2] -= err[:2]
             if tries[-1][2] is None:  # blind step
-                if h <= 0.0 or blind >= 2:
+                if h <= TOUCH_STEPS_MM[-1] or blind >= 3:
                     print(f"blind touch at commanded {h:+.0f} mm (dot)", flush=True)
                     cv2.imwrite(str(out.with_suffix(".touch.top.jpg")), top.frame())
                     cv2.imwrite(str(out.with_suffix(".touch.side.jpg")), side.frame())
@@ -1079,10 +1087,12 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             if tries[-1][0] > TOUCH_XY_MM:
                 raise RuntimeError(f"{tries[-1][0]:.1f} mm off the crossing at {h:.0f} mm: not dotting")
             height = float(-tries[-1][2][0][2])
-            # a stall alone fooled it at 1.9 mm (servo deadband on a 1 mm step, no dot): a stall counts only near the paper
             known[h] = corr.copy()
             poses[h] = dict(q)
-            if h <= 2.0 and (height <= 0.3 or (last is not None and last - height < CONTACT_MM and height <= 1.0)):
+            # contact = the tip stops sinking near the paper. A stall alone fooled it at 1.9 mm (servo deadband), and a
+            # height <= 0.3 rule stopped short: 3 runs read -0.6..-1.2 mm and left no ink; the one mark came at -2.2 mm
+            # (the paper sits ~1-2 mm under the camera's plane in that corner, 2026-10-30)
+            if h <= 0.0 and last is not None and last - height < CONTACT_MM and height <= 1.0:
                 print(f"contact: the tip stopped at {height:.1f} mm (dot), {time.time() - t0:.0f} s from the start", flush=True)
                 cv2.imwrite(str(out.with_suffix(".touch.top.jpg")), top.frame())
                 cv2.imwrite(str(out.with_suffix(".touch.side.jpg")), side.frame())
