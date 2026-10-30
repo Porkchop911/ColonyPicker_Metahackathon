@@ -7,6 +7,7 @@ overhead and side UGREENs over ~40 poses, so the arm model's 5-10 mm absolute er
     <hackathon venv python> tools/arm_calibrate.py selftest     the fit on synthetic data with known offsets
     <hackathon venv python> tools/arm_calibrate.py repeat       gate 0: return-to-START scatter per joint and side (~10 min)
     <hackathon venv python> tools/arm_calibrate.py repeat-report FILE   its numbers and the go/stop verdict
+    <hackathon venv python> tools/arm_calibrate.py fit-arm RUN...      arm terms (offsets, approach) -> arm_model.json
 
 Unknowns: shoulder and elbow zero offsets (pulses, kept), the tip in the camera frame (changes with every grasp) and
 the base on the desk: yaw + position in the overhead's sheet frame (changes with every strafe). A pan offset is the same
@@ -134,6 +135,24 @@ def selftest() -> None:
         assert r["gap_90"][0] - 0.3 <= 2.0 <= r["gap_90"][1] + 0.3, (j, r)
         assert 0.3 <= r["creep_mm"] <= 1.0, (j, r)
     assert 0.3 <= stats["worst_scatter_mm"] <= 1.0 and stats["verdict"].startswith("go"), stats
+    # fit_arm: synthetic run (0.8 mm noise): direction terms to 1 pulse; offsets to 4 (they trade against the tip, as above)
+    truth = np.array([6.0, -4.0, 5.0, -6.0, -4.0, -1.0, 3.0, -20.0, 170.0, 1.5, 40.0, -30.0, -10.0])
+    qs = [{**START, 1: START[1] + int(rng.integers(-35, 36)), 2: START[2] + int(rng.integers(-40, 21)),
+           3: START[3] + int(rng.integers(-50, 21)), 4: START[4] + int(rng.integers(-40, 41))} for _ in range(60)]
+    signs = [{k: int(rng.choice((-1, 1))) for k in (1, 2, 3, 4)} for _ in qs]
+    tips = arm_model(truth, qs, signs) + rng.normal(0.0, 0.8, (len(qs), 3))
+    tmp, tmp_out = Path("evidence/tip/_selftest_run.json"), Path("evidence/tip/_selftest_model.json")
+    tmp.write_text(json.dumps([{"cmd": {str(k): v for k, v in q.items()}, "approach": {str(k): v for k, v in sg.items()},
+                                "tip_mm": t.tolist()} for q, sg, t in zip(qs, signs, tips)]))
+    try:
+        got = fit_arm([tmp], out_path=tmp_out)
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp_out.unlink(missing_ok=True)
+    fitted = np.r_[got["d2"], got["d3"], [got["b"][str(k)] for k in (1, 2, 3, 4)]]
+    assert np.all(np.abs(fitted - truth[:6]) <= [4, 4, 1, 1, 1, 1]), (fitted, truth[:6])
+    print(f"fit_arm self-check ok: offsets {fitted[:2].round(1)} (true {truth[:2]}), direction {fitted[2:].round(1)} "
+          f"(true {truth[2:6]})")
     print(f"gate-0 stats self-check ok: gap {stats['1']['gap_mm']:.2f} mm (true 2.0), worst scatter "
           f"{stats['worst_scatter_mm']:.2f} mm (true 0.52), verdict '{stats['verdict']}'")
 
@@ -642,48 +661,90 @@ def fit_file(path: Path) -> None:
           f"max {res.max():.2f} mm over {len(rows)} poses -> {OUT}")
 
 
-def fit_px(path: Path, key: str = "pulses") -> tuple[np.ndarray, float, float]:
-    """The model fitted in image space: the model tip reprojected into the overhead and the side camera against the
-    tip pixels measured there. A 3D fit trusts the triangulated tip equally in all directions, but where the two rays
-    cross at a slant 4 side px moved it 8 mm (2026-10-30); pixel residuals weight each direction as seen.
-    `key`: "pulses" (read-back) or "cmd". Returns (params, overhead rms px, side rms px)."""
-    data = json.loads(path.read_text())
-    rig = next(r["rig"] for r in data if "rig" in r)
-    cams = [tuple(np.array(v, float) for v in rig[c]) for c in ("top", "side")]
-    rows = [r for r in data if "top_px" in r]
+ARM_MODEL = Path("evidence/tip/arm_model.json")
+APPROACH = -1  # placing's final approach per joint: from REPEAT_AWAY above (gate 0's repeatable side, the anchor's)
+
+
+def arm_pulses(q: dict, terms: dict, sign: dict | None = None) -> dict:
+    """Pulses the nominal model should see for commanded `q`: shoulder/elbow zero offsets plus a direction offset
+    b_j * approach_j per joint (`sign` per joint, default APPROACH for all)."""
+    sign = sign or {}
+    out = {k: v + terms["b"][str(k)] * sign.get(k, APPROACH) for k, v in q.items() if str(k) in terms["b"]}
+    out[2] += terms["d2"]
+    out[3] += terms["d3"]
+    return {**q, **out}
+
+
+def arm_model(p: np.ndarray, qs: list[dict], signs: list[dict]) -> np.ndarray:
+    """Tip in the sheet frame (mm): p = (d2, d3, b1-b4, tip_cam xyz, yaw, base xyz); arm terms as arm_pulses."""
+    d2, d3, b1, b2, b3, b4, tx, ty, tz, yaw, bx, by, bz = p
+    terms = {"d2": d2, "d3": d3, "b": {"1": b1, "2": b2, "3": b3, "4": b4}}
+    c, s = np.cos(yaw), np.sin(yaw)
+    rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]) @ np.diag([1.0, -1.0, -1.0])  # as model()
+    return np.array([rot @ ca.tip_in_base(arm_pulses(q, terms, sg), np.array([tx, ty, tz])) + [bx, by, bz]
+                     for q, sg in zip(qs, signs)])
+
+
+def fit_arm(paths: list[Path], key: str = "cmd", out_path: Path = ARM_MODEL) -> dict:
+    """Fit arm_model to collected runs and write the arm's own terms to ARM_MODEL. Live 2026-10-30 (run 11, 78 poses,
+    5-fold blocks held out): commanded pulses + approach terms 1.8 mm median / 4.0 mm p90; without approach terms no
+    model got under ~9 mm. The tip, base and grid frame are per run and only recorded. Several starts (geometry
+    first), then the worst 10 % dropped and refit."""
+    rows = [r for path in paths for r in json.loads(path.read_text()) if "approach" in r and "cmd" in r]
     qs = [{int(k): v for k, v in r[key].items()} for r in rows]
-    obs = [np.array([r["top_px"] for r in rows]), np.array([r["side_px"] for r in rows])]
+    signs = [{int(k): v for k, v in r["approach"].items()} for r in rows]
+    seen = np.array([r["tip_mm"] for r in rows])
 
-    def res(p: np.ndarray) -> np.ndarray:
-        pts = model(p, qs)
-        return np.concatenate([(cv2.projectPoints(pts, r, t, k, d)[0][:, 0] - o).ravel()
-                               for (k, d, r, t), o in zip(cams, obs)])
+    def lm(p, idx, iters, free):
+        lam, e = 1e-2, (arm_model(p, [qs[i] for i in idx], [signs[i] for i in idx]) - seen[idx]).ravel()
+        for _ in range(iters):
+            jac = np.zeros((e.size, p.size))
+            for i in np.nonzero(free)[0]:
+                dp = np.zeros(p.size)
+                dp[i] = 1e-3 if i == 9 else 1e-2
+                jac[:, i] = ((arm_model(p + dp, [qs[j] for j in idx], [signs[j] for j in idx]) - seen[idx]).ravel() - e) / dp[i]
+            h = jac.T @ jac + np.diag(~free * 1.0)
+            step = np.linalg.solve(h + lam * np.diag(np.diag(h) + 1e-9), -jac.T @ e)
+            step[~free] = 0.0
+            new = (arm_model(p + step, [qs[j] for j in idx], [signs[j] for j in idx]) - seen[idx]).ravel()
+            if new @ new < e @ e:
+                p, e, lam = p + step, new, lam * 0.3
+                if np.linalg.norm(step) < 1e-6:
+                    break
+            else:
+                lam *= 10
+        return p, np.linalg.norm(e.reshape(-1, 3), axis=1)
 
-    p, _ = fit(qs, np.array([r["tip_mm"] for r in rows]))  # 3D fit as the start
-    lam, e = 1e-2, res(p)
-    for _ in range(100):
-        jac = np.column_stack([(res(p + dp) - e) / dp[i] for i, dp in
-                               ((i, np.eye(p.size)[i] * (1e-3 if i == 5 else 1e-2)) for i in range(p.size))])
-        h = jac.T @ jac
-        step = np.linalg.solve(h + lam * np.diag(np.diag(h) + 1e-9), -jac.T @ e)
-        new = res(p + step)
-        if new @ new < e @ e:
-            p, e, lam = p + step, new, lam * 0.3
-            if np.linalg.norm(step) < 1e-6:
-                break
-        else:
-            lam *= 10
-    n = len(rows)
-    return p, float(np.sqrt(np.mean(e[:2 * n] ** 2) * 2)), float(np.sqrt(np.mean(e[2 * n:] ** 2) * 2))
+    idx = np.arange(len(rows))
+    geometry = np.r_[np.zeros(6, bool), np.ones(7, bool)]
+    best = None
+    for t0 in ([0, 25, 200], [70, -10, 175], [0, 60, 250], [-40, 0, 150], [40, 40, 180]):
+        for yaw in np.linspace(-np.pi, np.pi, 12, endpoint=False):
+            p0 = np.r_[np.zeros(6), t0, yaw, 0.0, 0.0, 0.0]
+            p0[10:] = (seen - arm_model(p0, qs, signs)).mean(0)
+            p, r = lm(p0, idx, 40, geometry)
+            best = (np.median(r), p) if best is None or np.median(r) < best[0] else best
+    p, r = lm(best[1], idx, 300, np.ones(13, bool))
+    p, _ = lm(p, idx[r <= np.percentile(r, 90)], 300, np.ones(13, bool))
+    r = np.linalg.norm(arm_model(p, qs, signs) - seen, axis=1)
+    out = {"d2": float(p[0]), "d3": float(p[1]), "b": {str(k): float(p[1 + k]) for k in (1, 2, 3, 4)},
+           "input": key, "approach": APPROACH, "poses": len(rows), "median_mm": float(np.median(r)),
+           "p90_mm": float(np.percentile(r, 90)), "tip_cam_mm": p[6:9].tolist(),  # record only: per grasp
+           "runs": [str(x) for x in paths]}
+    out_path.write_text(json.dumps(out, indent=1))
+    print(f"arm model ({key}, {len(rows)} poses): d2 {p[0]:+.1f} d3 {p[1]:+.1f} pulses, b {np.round(p[2:6], 1).tolist()}; "
+          f"tip {np.median(r):.2f} mm median, {np.percentile(r, 90):.2f} p90 (in sample) -> {out_path}")
+    return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=("collect", "fit", "selftest", "repeat", "repeat-report"))
-    ap.add_argument("data", nargs="?", type=Path, default=DATA)
+    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "selftest", "repeat", "repeat-report"))
+    ap.add_argument("data", nargs="*", type=Path, default=[DATA])
     args = ap.parse_args()
-    {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data), "repeat": repeat,
-     "repeat-report": lambda: repeat_report(args.data)}[args.cmd]()
+    {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data[0]), "repeat": repeat,
+     "fit-arm": lambda: fit_arm(args.data),
+     "repeat-report": lambda: repeat_report(args.data[0])}[args.cmd]()
 
 
 if __name__ == "__main__":
