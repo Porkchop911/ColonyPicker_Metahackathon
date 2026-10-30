@@ -407,6 +407,10 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
         return None
     cands = [(*tt.meet(tt.ray(tpx, *urig), tt.ray(spx, *srig)), area + s_area, tpx, spx) for spx, s_area in sides
              for tpx, area in tops]
+    if measure.expect is not None:  # where the arm was sent: junk pairs (an old dot, the plate) met to < 5 mm 98 mm away
+        cands = [c for c in cands if np.linalg.norm(c[0] - measure.expect) <= EXPECT_MM]
+        if not cands:
+            return None
     fit = [c for c in cands if c[1] <= MISS_MM]
     p3, miss, _, tpx, spx = max(fit, key=lambda c: c[2]) if fit else min(cands, key=lambda c: c[1])
     measure.px = (tpx.tolist(), spx.tolist())  # the pixels behind the last result, for a fit in image space
@@ -414,6 +418,8 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
 
 
 measure.top_bg = None  # an overhead frame with the needle elsewhere: enables the difference end (set by hover)
+measure.expect = None  # sheet mm the tip was sent to: candidates farther than EXPECT_MM are dropped (set by hover)
+EXPECT_MM = 8.0  # first tries landed up to ~5.5 mm off (2026-10-30)
 
 
 COLLECT_N = 200     # poses (plan step 2)
@@ -1000,6 +1006,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                 time.sleep(1.2)
                 send(q, ms=800)
                 time.sleep(0.8 + REPEAT_DWELL)
+                measure.expect = goal
                 got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
                 if got is None or got[1] > MISS_MM:
                     raise RuntimeError(f"{h:.0f} mm: tip not measured")
@@ -1050,6 +1057,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                     _, best_q, _, best_corr = min(tries, key=lambda t: t[0])  # last chance: the best command seen
                     q, corr[:] = dict(best_q), best_corr
                 tried_corr = corr.copy()
+                measure.expect = goal
                 # a fresh wet drop near the paper fell out of the overhead's colour range at 2 mm (2026-10-30): the last
                 # 2 mm go on blind from a pose measured within ~1 mm, no further correction
                 got = place(q, blind_ok=h <= 2.0)
@@ -1131,7 +1139,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             MEMORY.write_text(json.dumps({**memory, key: {**{str(h): c.tolist() for h, c in known.items()},
                                                           **{f"q{h}": {str(j): v for j, v in qq.items()}
                                                              for h, qq in poses.items()}}}, indent=1))
-        measure.top_bg = None
+        measure.top_bg = measure.expect = None
         print(f"saved {out}", flush=True)
 
 
