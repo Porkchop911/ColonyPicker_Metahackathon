@@ -163,19 +163,42 @@ def cameras():
     return top, side, det, urig, tuple(np.array(srig[q]) for q in ("k", "d", "r", "t"))
 
 
+TEAL = ((40, 25, 60), (110, 255, 255))  # HSV range of the tip ink (upright_touch_session)
+
+
 def measure(top, side, det, urig, srig):
-    """Inked tip in the sheet frame (mm, z down) by overhead teal tip + side SAM tip: (p3, miss mm), or None."""
-    import dashboard as dash
+    """Inked tip in the sheet frame (mm, z down): side SAM needle end, then the overhead teal blob whose ray best meets
+    the side ray (old ink on the paper does not line up; upright_touch_session.measure). (p3, miss mm), or None."""
     import tip_triangulate as tt
-    ug_px = dash.teal_tip(top.frame())
-    cv2.imwrite(str(SCRATCH), side.frame())
+    sf = side.frame()
+    cv2.imwrite(str(SCRATCH), sf)
     found = det(str(SCRATCH), "thin metal needle", 0.15)
-    if ug_px is None or not found:
-        print(f"tip not found (overhead {ug_px is not None}, side {bool(found)})", flush=True)
+    if not found:
+        print("tip not found: no needle in the side view", flush=True)
         return None
     vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
     k = int(np.argmax(vs))
-    return tt.meet(tt.ray(np.array(ug_px), *urig), tt.ray(np.array([us[k], vs[k]], float), *srig))
+    spx = np.array([us[k], vs[k]], float)
+    # SAM's needle mask stops where a thick ink bulb begins: the bulb's lowest teal pixel within 60 px is the real end
+    xs, ys = int(spx[0]), int(spx[1])
+    wx, wy = max(0, xs - 60), max(0, ys - 30)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(sf[wy:ys + 60, wx:xs + 60], cv2.COLOR_BGR2HSV), *TEAL))
+    near = [j for j in range(1, n) if st[j, 4] >= 6 and st[j, 1] + wy <= ys + 5]  # touching SAM's end, not a drip below
+    if near:
+        ty, tx = np.nonzero(lab == max(near, key=lambda j: st[j, 4]))
+        spx = np.array([tx[ty == ty.max()].mean() + wx, ty.max() + wy], float)
+    side_ray = tt.ray(spx, *srig)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(top.frame(), cv2.COLOR_BGR2HSV), *TEAL))
+    best = None
+    for j in range(1, n):
+        if st[j, 4] < 6:
+            continue
+        vs, us = np.nonzero(lab == j)
+        got = tt.meet(tt.ray(np.array([us[vs == vs.max()].mean(), vs.max()]), *urig), side_ray)
+        best = got if best is None or got[1] < best[1] else best
+    if best is None:
+        print("tip not found: no teal in the overhead view", flush=True)
+    return best
 
 
 def collect() -> None:
