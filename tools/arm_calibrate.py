@@ -332,9 +332,10 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     if not tops:
         print("tip not found: no teal in the overhead view", flush=True)
         return None
-    cands = [(*tt.meet(tt.ray(tpx, *urig), tt.ray(spx, *srig)), area) for spx in sides for tpx, area in tops]
+    cands = [(*tt.meet(tt.ray(tpx, *urig), tt.ray(spx, *srig)), area, tpx, spx) for spx in sides for tpx, area in tops]
     fit = [c for c in cands if c[1] <= MISS_MM]
-    p3, miss, _ = max(fit, key=lambda c: c[2]) if fit else min(cands, key=lambda c: c[1])
+    p3, miss, _, tpx, spx = max(fit, key=lambda c: c[2]) if fit else min(cands, key=lambda c: c[1])
+    measure.px = (tpx.tolist(), spx.tolist())  # the pixels behind the last result, for a fit in image space
     return p3, miss
 
 
@@ -389,6 +390,8 @@ def collect() -> None:
     top, side, det, urig, srig = cameras()
     bg = side_background(side)
     rows, anchor0, drifted = [], None, 0
+    # both camera poses in this run's sheet frame: a fit in image space reprojects the model tip into each
+    rows.append({"rig": {"top": [np.asarray(v).tolist() for v in urig], "side": [np.asarray(v).tolist() for v in srig]}})
     try:
         send(START, ms=2500)
         time.sleep(2.0)
@@ -467,6 +470,7 @@ def collect() -> None:
                 seen_q.append([now[k] for k in (1, 2, 3, 4)])
                 seen_h.append(float(-p3[2]))
                 rows.append({"pulses": {str(j): int(now[j]) for j in (1, 2, 3, 4, 5)},  # read-back: what fit uses
+                             "top_px": measure.px[0], "side_px": measure.px[1],
                              "cmd": {str(j): int(q[j]) for j in (1, 2, 3, 4, 5)},
                              "prev": {str(j): int(prev[j]) for j in (1, 2, 3, 4, 5)},
                              "approach": {str(k): v for k, v in sign.items()}, "dwell_s": REPEAT_DWELL,
@@ -620,7 +624,7 @@ def repeat_report(path: Path) -> None:
 
 
 def fit_file(path: Path) -> None:
-    rows = [r for r in json.loads(path.read_text()) if not r.get("anchor")]
+    rows = [r for r in json.loads(path.read_text()) if "pulses" in r]
     qs = [{int(k): v for k, v in r["pulses"].items()} for r in rows]
     seen = np.array([r["tip_mm"] for r in rows])
     p, rms = fit(qs, seen)
