@@ -137,6 +137,9 @@ def selftest() -> None:
 
 
 SCRATCH = Path("evidence/tip/_cal.png")
+SIDE_CACHE = Path("evidence/tip/side_pose_cache.json")  # the last side pose; refit when < 80 % of dots still fit
+SIDE_UP_MM = (110.0, 170.0)  # plausible side-camera height above the paper
+MISS_MM = 5.0  # overhead and side tip rays must meet this close (thick ink: the two cameras see points ~3 mm apart)
 
 
 def cameras():
@@ -156,10 +159,66 @@ def cameras():
     cv2.imwrite(str(SCRATCH), img)
     red = [d["centroid"] for d in det(str(SCRATCH), "small red dot", mj.SAM_THRESHOLD)
            if d["centroid"] and mj.RED_AREA[0] <= d["area"] <= mj.RED_AREA[1]]
-    known = json.loads(Path("evidence/descend/ugreen_dots.json").read_text())
+    # the sheet's black dots as SAM finds them now (the saved list goes stale when dots are added: 4 -> 12, 2026-10-30)
+    black = [d["centroid"] for d in det(str(SCRATCH), "black dot", mj.SAM_THRESHOLD)
+             if d["centroid"] and mj.SAM_AREA[0] <= d["area"] <= mj.SAM_AREA[1]]
+    known = black if len(black) >= 5 else json.loads(Path("evidence/descend/ugreen_dots.json").read_text())
     sheet = np.array([tt.on_sheet(q, *urig)[:2] for q in known + red])
-    srig = tt.side_rig(tt.side_marks(side.frame(), det, SCRATCH), sheet)
-    print(f"side pose: {srig['dots']} dots, {srig['rms']:.1f} px", flush=True)
+    marks = tt.side_marks(side.frame(), det, SCRATCH)
+
+    def agree(s: dict) -> int:
+        """Sheet dots that project onto a side mark (12 px) under side pose `s`."""
+        proj = cv2.projectPoints(np.column_stack([sheet, np.zeros(len(sheet))]), np.array(s["r"]), np.array(s["t"]),
+                                 np.array(s["k"]), np.array(s["d"]))[0][:, 0]
+        return int((np.linalg.norm(proj[:, None] - marks[None], axis=2).min(axis=1) <= 12.0).sum())
+
+    def refine(s: dict) -> dict:
+        """Re-solve the pose on every dot that lands on a mark (12 px), 3 rounds: a subset pose -> all dots."""
+        k, d = np.array(s["k"]), np.array(s["d"])
+        r, t = np.array(s["r"], float).reshape(3, 1), np.array(s["t"], float).reshape(3, 1)
+        obj = np.column_stack([sheet, np.zeros(len(sheet))]).astype(np.float64)
+        for _ in range(3):
+            gap = np.linalg.norm(cv2.projectPoints(obj, r, t, k, d)[0][:, 0][:, None] - marks[None], axis=2)
+            hit = gap.min(axis=1) <= 12.0
+            if hit.sum() < 5:
+                break
+            _, r, t = cv2.solvePnP(obj[hit], marks[gap[hit].argmin(axis=1)].astype(np.float64), k, d, r, t,
+                                   useExtrinsicGuess=True, flags=cv2.SOLVEPNP_ITERATIVE)
+        proj = cv2.projectPoints(obj, r, t, k, d)[0][:, 0]
+        gap = np.linalg.norm(proj[:, None] - marks[None], axis=2).min(axis=1)
+        centre = -cv2.Rodrigues(r)[0].T @ t.ravel()
+        return {**s, "r": r.ravel().tolist(), "t": t.ravel().tolist(), "dots": int((gap <= 12.0).sum()),
+                "rms": float(np.sqrt(np.mean(gap[gap <= 12.0] ** 2))), "centre_mm": centre.tolist()}
+
+    def plausible(s: dict) -> bool:
+        """The side camera sits ~140 mm above the paper (tape, full 12-dot fit 138 mm); a 10-dot fit at 286 mm put the
+        tip 95 mm under the paper (2026-10-30)."""
+        return SIDE_UP_MM[0] <= -s["centre_mm"][2] <= SIDE_UP_MM[1]
+
+    # side_rig tries every 4 marks x 4 dots: > 15 min with 12 dots. So: random 6-dot subsets (~15 s each), each refined on
+    # all dots, until one fits 80 % (one farthest-first subset alone fit 8/12 and put the tip 1.8 mm up instead of ~50).
+    # Cached: the camera does not move.
+    srig = json.loads(SIDE_CACHE.read_text()) if SIDE_CACHE.exists() else None
+    if srig is None or agree(srig) < 0.8 * len(sheet) or not plausible(srig):
+        rng, best = np.random.default_rng(), None
+        for attempt in range(20):
+            pick = rng.choice(len(sheet), min(6, len(sheet)), replace=False)
+            try:
+                s = refine(tt.side_rig(marks, sheet[pick]))
+            except RuntimeError:
+                continue
+            print(f"side pose try {attempt}: {s['dots']}/{len(sheet)} dots, {s['rms']:.1f} px, "
+                  f"camera {-s['centre_mm'][2]:.0f} mm up", flush=True)
+            if not plausible(s):
+                continue
+            best = s if best is None or (s["dots"], -s["rms"]) > (best["dots"], -best["rms"]) else best
+            if best["dots"] >= 0.8 * len(sheet):
+                break
+        if best is None or best["dots"] < 0.8 * len(sheet):
+            raise RuntimeError(f"side pose: at best {best and best['dots']}/{len(sheet)} dots fit")
+        srig = best
+        SIDE_CACHE.write_text(json.dumps(srig))
+    print(f"side pose: {srig['dots']} dots, {srig['rms']:.1f} px; now {agree(srig)}/{len(sheet)} dots on a mark", flush=True)
     return top, side, det, urig, tuple(np.array(srig[q]) for q in ("k", "d", "r", "t"))
 
 
@@ -188,13 +247,23 @@ def measure(top, side, det, urig, srig):
         ty, tx = np.nonzero(lab == max(near, key=lambda j: st[j, 4]))
         spx = np.array([tx[ty == ty.max()].mean() + wx, ty.max() + wy], float)
     side_ray = tt.ray(spx, *srig)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(top.frame(), cv2.COLOR_BGR2HSV), *TEAL))
+    tf = top.frame()
+    # only blobs over the paper: the cyan line art on the box at the overhead's right edge met the side ray to 0.01 mm
+    # 110 mm from the tip (2026-10-30). Paper = convex hull of the biggest bright area (as tt.side_marks finds it).
+    gray = cv2.cvtColor(tf, cv2.COLOR_BGR2GRAY)
+    _, plab, pst, _ = cv2.connectedComponentsWithStats((gray > 0.8 * np.percentile(gray, 90)).astype(np.uint8))
+    pys, pxs = np.nonzero(plab == 1 + int(np.argmax(pst[1:, 4])))
+    paper = cv2.convexHull(np.column_stack([pxs, pys]).astype(np.int32))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(tf, cv2.COLOR_BGR2HSV), *TEAL))
     best = None
     for j in range(1, n):
         if st[j, 4] < 6:
             continue
         vs, us = np.nonzero(lab == j)
-        got = tt.meet(tt.ray(np.array([us[vs == vs.max()].mean(), vs.max()]), *urig), side_ray)
+        px = np.array([us[vs == vs.max()].mean(), vs.max()])
+        if cv2.pointPolygonTest(paper, (float(px[0]), float(px[1])), False) < 0:
+            continue
+        got = tt.meet(tt.ray(px, *urig), side_ray)
         best = got if best is None or got[1] < best[1] else best
     if best is None:
         print("tip not found: no teal in the overhead view", flush=True)
@@ -216,7 +285,7 @@ def collect() -> None:
                 continue
             p3, miss = got
             print(f"{i:2d} pulses {now} tip {np.round(p3, 1)} miss {miss:.1f} mm", flush=True)
-            if miss <= 3.0:
+            if miss <= MISS_MM:
                 rows.append({"pulses": {str(j): int(now[j]) for j in (1, 2, 3, 4, 5)}, "tip_mm": p3.tolist(), "miss_mm": miss})
             if -p3[2] < MIN_HEIGHT_MM:
                 print(f"tip {-p3[2]:.1f} mm up: ending the sweep", flush=True)
@@ -317,7 +386,7 @@ def scatter(p: np.ndarray) -> float:
 def repeat_stats(rows: list[dict], boots: int = 1000, seed: int = 0) -> dict:
     """Per joint: same-side scatter, side gap (mm, pulses via the nominal model, bootstrap 90 %), short-dwell creep."""
     rng = np.random.default_rng(seed)
-    ok = [r for r in rows if r["miss_mm"] <= 3.0]
+    ok = [r for r in rows if r["miss_mm"] <= MISS_MM]
     out = {"static_mm": scatter(np.array([r["tip_mm"] for r in ok if r.get("static")]))}
     for j in REPEAT_JOINTS:
         arm = {s: np.array([r["tip_mm"] for r in ok if r.get("joint") == j and r["side"] == s and r["dwell_s"] == REPEAT_DWELL])
