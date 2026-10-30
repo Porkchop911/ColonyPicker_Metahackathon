@@ -1099,7 +1099,8 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                       f"{-got[0][2]:.1f} mm, error xy {tries[-1][0]:.2f} mm", flush=True)
                 if tries[-1][0] <= TOUCH_GOOD_MM:
                     break
-                corr[:2] -= err[:2]
+                if h > 2.0:  # below 2 mm xy stays put: a side-row change must come from height alone
+                    corr[:2] -= err[:2]
             if tries[-1][2] is None:  # blind step
                 if h <= TOUCH_STEPS_MM[-1] or blind >= 3:
                     print(f"blind touch at commanded {h:+.0f} mm (dot)", flush=True)
@@ -1121,8 +1122,11 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             rows.append({"side_row": row, "touch_mm": h})
             fit = [(hh, rr) for hh, rr in side_rows if hh >= 2.0]
             per_mm = -np.polyfit(*zip(*fit), 1)[0] if len(fit) >= 2 else None
-            contact = (h <= 2.0 and per_mm is not None and per_mm > 0 and side_rows
-                       and row - side_rows[-1][1] < CONTACT_ROW * per_mm * (side_rows[-1][0] - h))
+            # ... and only a stall, not a jump up, and only where the cameras put the tip at the paper: a 1-pulse pan
+            # change moved the row up 3 px at 1.2 mm and was taken for contact (no mark, 2026-10-30)
+            drow = row - side_rows[-1][1] if side_rows else None
+            contact = (h <= 2.0 and per_mm is not None and per_mm > 0 and drow is not None and height <= 0.5
+                       and -1.0 <= drow < CONTACT_ROW * per_mm * (side_rows[-1][0] - h))
             side_rows.append((h, row))
             if contact:
                 print(f"contact: side row moved {row - side_rows[-2][1]:.1f} px for {side_rows[-2][0] - h:.0f} mm "
@@ -1143,7 +1147,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             time.sleep(2.0)
             top.frame()
             after = top.frame()
-            dot = ink_dot(after, urig, goal_xy) or new_mark(measure.top_bg, after, urig, goal_xy)
+            dot = new_mark(measure.top_bg, after, urig, goal_xy) or ink_dot(after, urig, goal_xy)  # old marks: in both
             if dot is not None and hom is None:  # scoring needs the local grid: try the frame after the lift
                 try:
                     hom, cross = local_crossing(top.frame(), urig, goal_xy)[1:]
