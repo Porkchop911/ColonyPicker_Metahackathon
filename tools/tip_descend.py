@@ -140,7 +140,7 @@ def main() -> None:
 
     rig = json.loads(tt.RIG.read_text())
     # this grasp's tip offset, from one full two-camera triangulation
-    cam = Camera(0)
+    cam = Camera()
     first = tt.measure(cam.frame(), tt.snap_arm(), rig, tuple(args.near))
     fresh = np.array(first["tip_arm_cam_mm"])
     tip_cam = np.array(args.tip_cam) if args.tip_cam else fresh

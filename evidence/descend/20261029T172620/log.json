@@ -1,0 +1,98 @@
+[
+ {
+  "t": 1793291180.71,
+  "phase": "args",
+  "argv": "--out evidence/descend --lam 190 --jab --red 1302.4 359.2",
+  "wait_s": {}
+ },
+ {
+  "t": 1793291198.76,
+  "phase": "light",
+  "lamps": [
+   254,
+   0
+  ],
+  "wait_s": {}
+ },
+ {
+  "t": 1793291219.63,
+  "phase": "pose0",
+  "pose": {
+   "1": 500,
+   "2": 401,
+   "3": 188,
+   "4": 265,
+   "5": 502,
+   "10": 654
+  },
+  "wait_s": {
+   "snap": 1.09,
+   "sam": 0.95
+  }
+ },
+ {
+  "t": 1793291236.27,
+  "phase": "dots-filled",
+  "from_file": 2,
+  "wait_s": {
+   "sleep": 4.81,
+   "snap": 5.92,
+   "grid": 1.59,
+   "ugreen": 0.83,
+   "sam": 2.7
+  }
+ },
+ {
+  "t": 1793291238.42,
+  "phase": "side-rig",
+  "when": "tie",
+  "dots": 5,
+  "rms_px": 2.263237780145217,
+  "centre_mm": [
+   -206.47637425636924,
+   -78.09597199636775,
+   -135.67244253371604
+  ],
+  "tilt_deg": -38.47126283769801,
+  "runner_up": {
+   "dots": 5,
+   "rms": 3.363434147811626
+  },
+  "wait_s": {
+   "sam": 1.16,
+   "side": 0.44
+  }
+ },
+ {
+  "t": 1793291238.78,
+  "phase": "cube-carried",
+  "cube_mm": [
+   154.5491172059732,
+   -72.55880101642174
+  ],
+  "wait_s": {
+   "sam": 0.34
+  }
+ },
+ {
+  "t": 1793291238.78,
+  "phase": "abort",
+  "error": "RuntimeError('no dot seen by both cameras agrees with the cube: frames not tied')",
+  "wait_s": {}
+ },
+ {
+  "t": 1793291241.02,
+  "phase": "lift",
+  "readback": {
+   "1": 500,
+   "2": 401,
+   "3": 180,
+   "4": 265,
+   "5": 502,
+   "10": 654
+  },
+  "wait_s": {
+   "sleep": 2.19
+  }
+ }
+]

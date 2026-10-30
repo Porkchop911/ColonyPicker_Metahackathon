@@ -1,0 +1,60 @@
+[
+ {
+  "t": 1793290799.87,
+  "phase": "args",
+  "argv": "--out evidence/descend --lam 190 --jab --red 1302.4 359.2",
+  "wait_s": {}
+ },
+ {
+  "t": 1793290814.22,
+  "phase": "light",
+  "lamps": [
+   120,
+   120
+  ],
+  "wait_s": {}
+ },
+ {
+  "t": 1793290834.61,
+  "phase": "pose0",
+  "pose": {
+   "1": 500,
+   "2": 406,
+   "3": 189,
+   "4": 266,
+   "5": 501,
+   "10": 655
+  },
+  "wait_s": {
+   "snap": 0.5,
+   "sam": 0.98
+  }
+ },
+ {
+  "t": 1793290849.18,
+  "phase": "abort",
+  "error": "RuntimeError('SAM 3.1 found 0 black dots on the notebook in the UGREEN, expected 4')",
+  "wait_s": {
+   "sleep": 4.74,
+   "snap": 3.98,
+   "grid": 1.5,
+   "ugreen": 0.86,
+   "sam": 2.78
+  }
+ },
+ {
+  "t": 1793290851.41,
+  "phase": "lift",
+  "readback": {
+   "1": 500,
+   "2": 406,
+   "3": 180,
+   "4": 266,
+   "5": 501,
+   "10": 655
+  },
+  "wait_s": {
+   "sleep": 2.2
+  }
+ }
+]

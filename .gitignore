@@ -1,3 +1,10 @@
 .venv/
 __pycache__/
 config/hue.local.json
+evidence/descend/stop.flag
+evidence/descend/side_aim_*.png
+evidence/descend/lamps.json
+evidence/descend/exposure.json
+evidence/markers_a4.png
+evidence/descend/preflight.txt
+evidence/descend/tip_cam.json
