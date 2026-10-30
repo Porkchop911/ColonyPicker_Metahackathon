@@ -343,6 +343,7 @@ ANCHOR_EVERY = 20   # START again from +REPEAT_AWAY (gate 0's repeatable side; f
 DRIFT_MM = 2.0      # an anchor this far from the first one twice in a row ends the run
 SAFE_MM = 25.0      # a pose or its pre-move predicted lower than this (measured START height + measured slopes) is skipped
 PROBE = 10          # pulses per joint around START for the measured height slopes
+LOCAL_MM = 40.0     # a pose or pre-move the plane fitted to the measured poses puts lower than this is skipped
 
 
 def approach_plan(qs: list[dict], seed: int = 1) -> list[tuple[dict, dict, dict]]:
@@ -368,8 +369,9 @@ def low_plan(n: int, rise, height: float, seed: int = 0) -> list[tuple[dict, dic
     for _ in range(100 * n):
         if len(out) >= n:
             break
-        q = {**START, 1: START[1] + int(rng.integers(-35, 36)), 2: START[2] + int(rng.integers(-60, 21)),
-             3: START[3] + int(rng.integers(-100, 21)), 4: START[4] + int(rng.integers(-60, 61))}
+        # elbow -100 took the tip 16 mm under the paper plane (2026-10-30): ranges kept to what measured safe
+        q = {**START, 1: START[1] + int(rng.integers(-35, 36)), 2: START[2] + int(rng.integers(-40, 21)),
+             3: START[3] + int(rng.integers(-50, 21)), 4: START[4] + int(rng.integers(-40, 41))}
         if rise(q) <= 3.0 and safe(q):
             out.append(q)
     order, left = [out[0]], out[1:]
@@ -408,6 +410,22 @@ def collect() -> None:
                  for k in (1, 2, 3, 4)}
         rise = lambda q: sum(slope[k] * (q[k] - START[k]) for k in slope)  # noqa: E731
         low = lambda q: height + 1.5 * min(rise(q), 0.0) < SAFE_MM  # noqa: E731
+        seen_q, seen_h = [], []  # read-back pulses and measured heights so far, seeded with earlier runs' poses
+        for f in sorted(DATA.parent.glob("arm_calibration_data*.json")):  # heights do not depend on the grid numbering
+            for r in json.loads(f.read_text()):
+                if "pulses" in r:
+                    seen_q.append([r["pulses"][str(k)] for k in (1, 2, 3, 4)])
+                    seen_h.append(-r["tip_mm"][2])
+        print(f"height fit seeded with {len(seen_q)} earlier poses", flush=True)
+
+        def local(q: dict) -> float:
+            """Height (mm) at q from a plane fitted to the poses measured so far (>= 8), else the START slopes: the START
+            slopes were 2-6x off a few poses away (elbow 0.39 measured, 2.2 mm/pulse real, 2026-10-30)."""
+            if len(seen_q) < 8:
+                return height + rise(q)
+            a = np.column_stack([np.ones(len(seen_q)), np.array(seen_q, float) - [START[k] for k in (1, 2, 3, 4)]])
+            coef = np.linalg.lstsq(a, np.array(seen_h), rcond=None)[0]
+            return float(coef @ np.r_[1.0, [q[k] - START[k] for k in (1, 2, 3, 4)]])
         plan = low_plan(COLLECT_N, rise, height)
         print(f"START tip {height:.1f} mm up; slopes mm/pulse {{{', '.join(f'{k}: {v:+.2f}' for k, v in slope.items())}}}; "
               f"{len(plan)} poses", flush=True)
@@ -429,8 +447,9 @@ def collect() -> None:
                     if drifted >= 2:
                         print("anchor moved twice: stopping", flush=True)
                         break
-            if low(pre) or low(q):
-                print(f"{i:3d} skipped: the model puts it below {SAFE_MM:.0f} mm", flush=True)
+            if low(pre) or low(q) or min(local(pre), local(q)) < LOCAL_MM:
+                print(f"{i:3d} skipped: predicted below {SAFE_MM:.0f} mm (slopes) or {LOCAL_MM:.0f} mm (fit "
+                      f"{min(local(pre), local(q)):.0f})", flush=True)
                 continue
             send(pre, ms=1000)
             time.sleep(1.0)
@@ -445,6 +464,8 @@ def collect() -> None:
             print(f"{i:3d} cmd {[q[k] for k in (1, 2, 3, 4)]} read {[now[k] for k in (1, 2, 3, 4)]} "
                   f"tip {np.round(p3, 1)} miss {miss:.1f} mm", flush=True)
             if miss <= MISS_MM:
+                seen_q.append([now[k] for k in (1, 2, 3, 4)])
+                seen_h.append(float(-p3[2]))
                 rows.append({"pulses": {str(j): int(now[j]) for j in (1, 2, 3, 4, 5)},  # read-back: what fit uses
                              "cmd": {str(j): int(q[j]) for j in (1, 2, 3, 4, 5)},
                              "prev": {str(j): int(prev[j]) for j in (1, 2, 3, 4, 5)},
@@ -459,8 +480,9 @@ def collect() -> None:
         top.close()
         side.close()
         SCRATCH.unlink(missing_ok=True)
-        DATA.write_text(json.dumps(rows, indent=1))
-        print(f"{len(rows)} poses saved to {DATA}", flush=True)
+        out = DATA.with_name(f"arm_calibration_data_{time.strftime('%Y%m%dT%H%M%S')}.json")  # never overwrite a run
+        out.write_text(json.dumps(rows, indent=1))
+        print(f"{len(rows)} poses saved to {out}", flush=True)
 
 
 # Gate 0 (docs/plan_2026-10-30_arm_calibration.md): how well the arm returns to one pose, per joint and approach side
