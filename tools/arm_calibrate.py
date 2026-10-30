@@ -147,6 +147,7 @@ def cameras():
     import base64  # noqa: F401  (robot I/O only here)
     import markers  # noqa: F401
     import model_jab as mj
+    import paper_grid as pg
     import sam_detect as sam
     import tip_triangulate as tt
     from rig_io import OVERHEAD, SIDE, SIDE_PAPER, Camera
@@ -200,9 +201,23 @@ def cameras():
     # Cached: the camera does not move. Never refit over a cache: the regular 2x4 dot block lets a shifted pose fit as
     # well (11 dots, 0.46 px, centre 47 mm off) and a refit at 14:47 broke every measurement (2026-10-30).
     srig = json.loads(SIDE_CACHE.read_text()) if SIDE_CACHE.exists() else None
-    if srig is not None and agree(srig) < 0.6 * len(sheet):
-        raise RuntimeError(f"side pose cache fits only {agree(srig)}/{len(sheet)} dots: camera or sheet moved? "
-                           f"delete {SIDE_CACHE} to refit, then check a measured tip by eye")
+    if srig is not None:
+        # the overhead numbers the grid from whichever crossing it locks onto, so its sheet frame moves by whole squares
+        # between runs (cache fit 0/12 dots with neither camera moved, 2026-10-30): shift this run's overhead frame back
+        base = sheet.copy()
+        shifts = [np.array([i, j]) * pg.SQUARE_MM for i in range(-20, 21) for j in range(-20, 21)]
+        hits = []
+        for s in shifts:
+            sheet[:] = base + s
+            hits.append(agree(srig))
+        best = shifts[int(np.argmax(hits))]
+        sheet[:] = base + best
+        if max(hits) < 0.6 * len(sheet):
+            raise RuntimeError(f"side pose cache fits only {max(hits)}/{len(sheet)} dots at any grid shift: camera or sheet "
+                               f"moved? delete {SIDE_CACHE} to refit, then check a measured tip by eye")
+        k, d, r, t = urig  # cam = R sheet + t; sheet' = sheet + s  ->  t' = t - R s
+        urig = (k, d, r, t - (cv2.Rodrigues(np.array(r, float))[0] @ np.r_[best, 0.0]).reshape(np.shape(t)))
+        print(f"overhead grid shifted by {best.round(1).tolist()} mm to the cached side pose", flush=True)
     if srig is None:
         rng, best = np.random.default_rng(), None
         for attempt in range(20):
@@ -370,7 +385,7 @@ def collect() -> None:
                 time.sleep(1.0)
                 send(START, ms=800)
                 time.sleep(0.8 + REPEAT_DWELL)
-                got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(3)) if g is not None), None)
+                got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)
                 if got is not None and got[1] <= MISS_MM:
                     anchor0 = got[0] if anchor0 is None else anchor0
                     off = float(np.linalg.norm(got[0] - anchor0))
@@ -391,7 +406,7 @@ def collect() -> None:
             send(q, ms=800)
             time.sleep(0.8 + REPEAT_DWELL)
             now = read()
-            got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(3)) if g is not None), None)
+            got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)
             if got is None:
                 continue
             p3, miss = got
