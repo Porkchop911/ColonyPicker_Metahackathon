@@ -208,3 +208,24 @@ GO.** START, tip 84 mm up; 20-pulse excursions; overhead teal tip + side SAM nee
   Pan's 15 mm gap with only 2-3 pulses of read-back difference is slack after the read-back.
 - Settle 0.4 s is as good as 1.6 s (<= 0.5 mm): AGREED S2's short settles cost nothing here.
 - Pulses-per-mm in `repeat-report` use a guessed tip offset (`TIP_GUESS`); the mm numbers are measured.
+
+**Collection, 2026-10-30, `evidence/tip/arm_calibration_data_20261030T152658.json` (run 11, 84 poses, 78 with
+pixels; runs 1-10 found and fixed measurement and safety faults, see the commit log).** Poses at or below START
+(the side camera loses the tip above it), tip 36-91 mm up, each joint +-30-40 pulses, approach side random per joint.
+START anchor every 20 poses stayed within 0.85 mm.
+
+| Tip model (x, y, z), 5-fold blocks of the pose path held out | Median | p90 |
+|---|---|---|
+| quadratic in read-back pulses | 8.7 mm | 18.8 mm |
+| **quadratic in read-back + approach side per joint** | **1.9 mm** | **3.7 mm** |
+| quadratic in commanded pulses + approach side | 2.7 mm | 5.7 mm |
+
+- The labels are good to ~1 mm (in-sample, 10 % trimmed: 1.05 mm median); the arm's error is dominated by approach
+  direction, as gate 0 said. **Answer to the research question:** a small learnt model works, but only with the
+  approach direction as an input; on pulses alone no model (MLP or not) gets under ~9 mm here.
+- The URDF fit (`model`, offsets +- gains) does not converge to anything physical yet (offsets of 60+ pulses, 6 mm
+  RMS even trimmed): the vendored geometry does not match this grasp well enough. Fixed on the way: `model` mapped
+  base z up onto sheet z down without a flip.
+- Faults found and fixed live (all in `tools/arm_calibrate.py`): side SAM misses ~half the frames (now background
+  difference); old ink on the paper and box line art posed as the tip; the side pose needs the overhead's grid shift
+  undone each run; the START-slope height guard was 2-6x off (now a plane refit on every measured pose).

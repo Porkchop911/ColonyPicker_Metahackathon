@@ -36,7 +36,9 @@ def model(p: np.ndarray, pulses: list[dict]) -> np.ndarray:
     """Tip in the overhead's sheet frame (mm) at these pulses: p = (d2, d3, tip_cam xyz, yaw, base xyz)."""
     d2, d3, tx, ty, tz, yaw, bx, by, bz = p
     c, s = np.cos(yaw), np.sin(yaw)
-    rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])  # the base stands on the desk: yaw only
+    # the base stands on the desk: yaw only, then base z up -> sheet z down (heights are -z; yaw alone could not fit
+    # live data: offsets of hundreds of pulses, 2026-10-30)
+    rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]) @ np.diag([1.0, -1.0, -1.0])
     out = []
     for q in pulses:
         tip = ca.tip_in_base({**q, 2: q[2] + d2, 3: q[3] + d3}, np.array([tx, ty, tz]))
@@ -638,6 +640,41 @@ def fit_file(path: Path) -> None:
                                "max_residual_mm": float(res.max()), "tip_cam_mm": p[2:5].tolist()}, indent=1))
     print(f"offsets shoulder {p[0]:+.1f} +- {sd[0]:.1f}, elbow {p[1]:+.1f} +- {sd[1]:.1f} pulses (used {use}); rms {rms:.2f} mm (without offsets {rms0:.2f}), "
           f"max {res.max():.2f} mm over {len(rows)} poses -> {OUT}")
+
+
+def fit_px(path: Path, key: str = "pulses") -> tuple[np.ndarray, float, float]:
+    """The model fitted in image space: the model tip reprojected into the overhead and the side camera against the
+    tip pixels measured there. A 3D fit trusts the triangulated tip equally in all directions, but where the two rays
+    cross at a slant 4 side px moved it 8 mm (2026-10-30); pixel residuals weight each direction as seen.
+    `key`: "pulses" (read-back) or "cmd". Returns (params, overhead rms px, side rms px)."""
+    data = json.loads(path.read_text())
+    rig = next(r["rig"] for r in data if "rig" in r)
+    cams = [tuple(np.array(v, float) for v in rig[c]) for c in ("top", "side")]
+    rows = [r for r in data if "top_px" in r]
+    qs = [{int(k): v for k, v in r[key].items()} for r in rows]
+    obs = [np.array([r["top_px"] for r in rows]), np.array([r["side_px"] for r in rows])]
+
+    def res(p: np.ndarray) -> np.ndarray:
+        pts = model(p, qs)
+        return np.concatenate([(cv2.projectPoints(pts, r, t, k, d)[0][:, 0] - o).ravel()
+                               for (k, d, r, t), o in zip(cams, obs)])
+
+    p, _ = fit(qs, np.array([r["tip_mm"] for r in rows]))  # 3D fit as the start
+    lam, e = 1e-2, res(p)
+    for _ in range(100):
+        jac = np.column_stack([(res(p + dp) - e) / dp[i] for i, dp in
+                               ((i, np.eye(p.size)[i] * (1e-3 if i == 5 else 1e-2)) for i in range(p.size))])
+        h = jac.T @ jac
+        step = np.linalg.solve(h + lam * np.diag(np.diag(h) + 1e-9), -jac.T @ e)
+        new = res(p + step)
+        if new @ new < e @ e:
+            p, e, lam = p + step, new, lam * 0.3
+            if np.linalg.norm(step) < 1e-6:
+                break
+        else:
+            lam *= 10
+    n = len(rows)
+    return p, float(np.sqrt(np.mean(e[:2 * n] ** 2) * 2)), float(np.sqrt(np.mean(e[2 * n:] ** 2) * 2))
 
 
 def main() -> None:
