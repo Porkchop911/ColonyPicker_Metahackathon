@@ -249,6 +249,20 @@ not needed: commanded pulses with direction terms are within 0.2 mm of read-back
 `tools/regress.py` 1/4 with and without the change, identical outcomes; the 3 fails are the committed
 `tipcam-external` code without AGREED step 1 (per-run `ugreen_dots.json`, uncommitted in the main checkout).
 
-**Step 6 (not done):** `arm_calibrate.py aim` (grid crossings at 60 mm, nominal vs calibrated in turn) ran 1 move
-before the robot had to charge: nominal, 12.1 mm off the crossing in xy. Next session: `aim`, then the 10 mm hover
-by measured placing, then a crossing touch.
+**Step 6 (done, evening 2026-10-30, new layout):** the setup changed (overhead ~46 deg for colony imaging, black mat,
+plates, no ink dots). `tools/plate_rig.py` re-solves both cameras from the ruling and the 96-well plate (overhead ~550
+crossings 0.8 px, side ~210 crossings 0.9 px; checked on the mat edge in both views; tip rays meet to 0.4-0.6 mm).
+`fit-tie` refit only tip/yaw/base on 11 new poses (arm terms kept): 1.2 mm in sample. `aim` re-anchors both models
+at START first (the START tip had moved 3 mm since the tie run) and only uses targets seen over paper or the mat
+(the ink is lost over agar).
+
+| model, 60 mm hover, 6 moves each | xy median | xy max | z median |
+|---|---|---|---|
+| nominal URDF (tied by the same data, START-anchored) | 1.91 mm | 4.18 mm | -0.45 mm |
+| **calibrated (offsets + direction terms)** | **0.95 mm** | **1.72 mm** | -0.57 mm |
+
+`evidence/tip/arm_aim_20261030T212403.json`. Targets sit within ~30 mm of START, where the anchor already absorbs
+most of the nominal error; farther targets should separate the two more. Seen on the way: the overhead mount creeps
+(3.4 px between runs; `cameras()` regrows the pose from the cache, same frame), and the robot/needle moved 3 mm
+between runs (hence the anchor). Next: the 10 mm hover by measured placing, then a crossing touch on open paper
+(nearest open paper is ~40 mm from the START footprint).

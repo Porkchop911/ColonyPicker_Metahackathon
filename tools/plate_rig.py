@@ -291,6 +291,20 @@ def check(top_img: np.ndarray) -> int:
     return int((snap(und, k, np.array(c["r"]), np.array(c["t"]))[1] < SNAP_PX).sum())
 
 
+def refresh(top_img: np.ndarray) -> int:
+    """Follow a small overhead creep (3.4 px between two runs, 2026-10-30) without changing the frame: regrow from the
+    cached pose, so every crossing keeps its lattice label, and rewrite the cache. Returns the crossings that fit; the
+    cache is left alone when that stays under CHECK_MIN (moved too far: rerun the full solve and refit the tie)."""
+    c = json.loads(TOP_CACHE.read_text())
+    k, d = np.array(c["k"]), np.array(c["d"])
+    und = undistort(pg.crossings(pg.ruling_mask(top_img)), k, d)
+    r, t, n, rms = regrow(und, k, np.array(c["r"]), np.array(c["t"]))
+    if n >= CHECK_MIN:
+        TOP_CACHE.write_text(json.dumps({**c, "r": r.ravel().tolist(), "t": t.ravel().tolist(), "crossings": n, "rms": rms,
+                                         "refreshed": True}))
+    return n
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true")

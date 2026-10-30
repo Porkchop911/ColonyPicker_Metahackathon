@@ -181,6 +181,9 @@ def cameras():
     if prig.TOP_CACHE.exists():  # tilted overhead since 2026-10-30: both poses from plate_rig.py, no ink dots
         fits = prig.check(img)
         if fits < prig.CHECK_MIN:
+            fits = prig.refresh(img)
+            print(f"overhead crept: pose regrown from the cache, {fits} crossings", flush=True)
+        if fits < prig.CHECK_MIN:
             raise RuntimeError(f"cached overhead pose fits {fits} crossings (< {prig.CHECK_MIN}): camera moved? "
                                f"rerun tools/plate_rig.py")
         rigs = [json.loads(p.read_text()) for p in (prig.TOP_CACHE, prig.SIDE_CACHE)]
@@ -273,6 +276,7 @@ def cameras():
     return top, side, det, urig, tuple(np.array(srig[q]) for q in ("k", "d", "r", "t"))
 
 
+TIP_MIN_PX = 200  # overhead ink blob: the tip is 800-1700 px; a 60 px tint at the plate's corner met junk (2026-10-30)
 TEAL = ((40, 25, 60), (110, 255, 255))  # HSV range of the tip ink (upright_touch_session)
 
 
@@ -346,7 +350,7 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     # the side view and the background difference picked a blob by a dish (2026-10-30); rays must still meet below
     inked = [(px, a) for px, a in teal_ends(sf, on_paper=False) + teal_ends(sf, on_paper=True) if a >= 30]
     if end is not None or inked:
-        sides = [(end, 0)] * (end is not None) + inked
+        sides = inked or [(end, 0)]  # the difference end only without ink: it paired a plate corner (2026-10-30)
     elif found:
         vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
         k = int(np.argmax(vs))
@@ -367,7 +371,7 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
         return None
     # overhead: only over the paper: the cyan line art on the box at its right edge met the side ray to 0.01 mm 110 mm
     # from the tip (2026-10-30)
-    tops = teal_ends(top.frame(), on_paper=True)
+    tops = [(px, a) for px, a in teal_ends(top.frame(), on_paper=True) if a >= TIP_MIN_PX]
     if not tops:
         print("tip not found: no teal in the overhead view", flush=True)
         return None
@@ -759,7 +763,7 @@ def fit_arm(paths: list[Path], key: str = "cmd", out_path: Path = ARM_MODEL, tie
 
 
 AIM_HOVER_MM = 60.0  # A/B hover: mid-data (36-91 mm); 40 mm needed shoulder -60 pulses, outside the sampled range
-AIM_REACH_MM = 15.0  # crossings this far around the START footprint
+AIM_REACH_MM = 30.0  # crossings this far around the START footprint (15 until the dishes covered it, 2026-10-30)
 
 
 def aim_solve(p: np.ndarray, goal: np.ndarray, start: dict) -> tuple[dict, float]:
@@ -792,10 +796,36 @@ def aim(n: int = 10) -> None:
     top, side, det, urig, srig = cameras()
     bg = side_background(side)
     up = {k: ca.APPROACH for k in (1, 2, 3, 4)}
+    # re-anchor: the START tip moved 3 mm between the tie run and the A/B (base or needle slip, 2026-10-30); shift both
+    # models' base so they predict the START measured now (translation only, the arm terms untouched)
+    send({**START, **{k: START[k] + REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
+    time.sleep(1.0)
+    send(START, ms=800)
+    time.sleep(0.8 + REPEAT_DWELL)
+    got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
+    if got is None or got[1] > MISS_MM:
+        raise RuntimeError("START tip not measured: cannot anchor the A/B")
+    for name, p in models.items():
+        delta = got[0] - arm_model(p, [START], [up])[0]
+        p[10:13] += delta
+        print(f"{name}: anchored at START, base moved {np.round(delta, 1).tolist()} mm", flush=True)
     start_xy = arm_model(models["calibrated"], [START], [up])[0][:2]
     rng = np.random.default_rng(int(time.time()) % 100000)
-    cross = [np.round(start_xy / 5.0) * 5.0 + 5.0 * np.array([i, j]) for i in range(-3, 4) for j in range(-3, 4)]
-    cross = [c for c in cross if np.linalg.norm(c - start_xy) <= AIM_REACH_MM]
+    cross = [np.round(start_xy / 5.0) * 5.0 + 5.0 * np.array([i, j]) for i in range(-8, 9) for j in range(-8, 9)]
+    # the tip must not be seen over a dish: the ink is not found against the agar (2026-10-30). Paper or the black mat
+    # behind the hover point are fine; the crossings themselves need not be visible for the A/B (the mat covers them)
+    img = top.frame()
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    p90 = np.percentile(gray, 90)
+    paper = cv2.erode(((gray > 0.8 * p90) | (gray < 0.45 * p90)).astype(np.uint8), np.ones((15, 15), np.uint8))
+
+    def on_paper(xyz: np.ndarray) -> bool:
+        u, v = cv2.projectPoints(np.array([xyz], float), np.asarray(urig[2], float), np.asarray(urig[3], float),
+                                 np.asarray(urig[0], float), np.asarray(urig[1], float))[0][0, 0]
+        return 0 <= u < gray.shape[1] and 0 <= v < gray.shape[0] and bool(paper[int(v), int(u)])
+
+    cross = [c for c in cross if np.linalg.norm(c - start_xy) <= AIM_REACH_MM and on_paper(np.r_[c, -AIM_HOVER_MM])]
+    print(f"{len(cross)} crossings within {AIM_REACH_MM:.0f} mm of START seen over paper or mat", flush=True)
     targets = [cross[i] for i in rng.choice(len(cross), min(n, len(cross)), replace=False)]
     out = Path(f"evidence/tip/arm_aim_{time.strftime('%Y%m%dT%H%M%S')}.json")
     rows = []
