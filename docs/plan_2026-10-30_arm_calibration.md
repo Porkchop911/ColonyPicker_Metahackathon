@@ -270,4 +270,11 @@ placing: calibrated model + accumulated measured correction, 40 -> 25 -> 15 -> 1
 and stop on a lost tip or a tip below its step. Per step (xy error, height): 40 mm 3.8 -> 1.3 mm (outside the tie data:
 pan +51 pulses); 25 mm 0.65 -> 0.48 mm; 15 mm 3.6 -> 0.29 mm; **10 mm 0.13 mm xy, 9.4 mm up, first try**.
 `evidence/tip/arm_hover_20261030T213200.*` (zoom: tip straight over the crossing in both views, shadow on it).
-Next: the touch, by the same loop below 10 mm in 1-2 mm steps, stopping on contact (side view: tip meets shadow).
+
+**Touch (done, no mark):** `arm_calibrate.py dot` = hover + 8, 6, 4, 3, 2, 1, 0, -1, -2 mm, up to 3 tries per height
+(best command kept: one pan pulse is ~0.8 mm sideways out here), lift if the best is > 2 mm off, contact when a
+commanded mm down moves the tip < 0.3 mm. Run `evidence/tip/arm_hover_20261030T214136.*`: 10 mm 0.36 mm xy; 8 -> 2 mm
+0.4-0.9 mm xy; contact at commanded 0 mm (tip stopped at -1.0 mm, i.e. on the paper within the plane/bulb error),
+**0.81 mm from the crossing**. Both photos show the tip on the crossing (side: tip meets its shadow). No mark was left:
+the teal on the needle is dried ink. Next: wet ink on the tip, then the same `dot`; `ink_dot` reports the mark's
+offset from the crossing.

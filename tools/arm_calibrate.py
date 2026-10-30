@@ -814,7 +814,26 @@ HOVER_XY_MM, HOVER_Z_MM = 0.5, 1.0  # good enough to go lower
 HOVER_GOAL = (-5.0, 45.0)  # open-paper crossing nearest in joint motion (58 pulses from START), seen by both cameras
 
 
-def hover(goal_xy=HOVER_GOAL) -> None:
+TOUCH_STEPS_MM = (8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0)  # below 10 mm: one try each, xy corrected
+TOUCH_XY_MM = 2.0   # best try off the crossing by more than this below 10 mm: lift instead of dotting the wrong place
+TOUCH_GOOD_MM = 1.0  # a try this close goes on down
+CONTACT_MM = 0.3    # a commanded mm down that moves the tip less than this: it is on the paper
+
+
+def ink_dot(img: np.ndarray, urig, goal_xy) -> np.ndarray | None:
+    """The ink dot on the paper nearest the goal (sheet mm), from the overhead after the needle has left: centroid of
+    the teal blobs (relative hue as teal_ends) within 6 mm of the goal."""
+    import tip_triangulate as tt
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    lo = (min(TEAL[0][0], int(np.median(hsv[..., 0][gray > np.percentile(gray, 70)])) + 8), *TEAL[0][1:])
+    n, lab, st, cen = cv2.connectedComponentsWithStats(cv2.inRange(hsv, lo, TEAL[1]))
+    spots = [tt.on_sheet(cen[j], *urig)[:2] for j in range(1, n) if st[j, 4] >= 6]
+    near = [s for s in spots if np.linalg.norm(s - np.asarray(goal_xy)) <= 6.0]
+    return min(near, key=lambda s: np.linalg.norm(s - np.asarray(goal_xy))) if near else None
+
+
+def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
     """Measured placing down to 10 mm over a grid crossing: at each of HOVER_STEPS_MM, solve the calibrated model for
     the goal shifted by the accumulated correction, approach from 20 pulses above, measure, correct, until within
     HOVER_XY_MM / HOVER_Z_MM, then go lower. Lifts and stops on a lost tip or a tip below the step it is on (no
@@ -855,11 +874,64 @@ def hover(goal_xy=HOVER_GOAL) -> None:
                 corr -= err
         cv2.imwrite(str(out.with_suffix(".top.jpg")), top.frame())
         cv2.imwrite(str(out.with_suffix(".side.jpg")), side.frame())
-        print(f"holding over {goal_xy} at 10 mm for the photos; lifting", flush=True)
+        print(f"holding over {goal_xy} at 10 mm for the photos", flush=True)
         time.sleep(2.0)
+        last = None
+
+        def place(qq: dict):
+            send({**qq, 2: qq[2] + 15, 3: qq[3] + 15}, ms=900)  # from just above, straight down
+            time.sleep(1.0)
+            send(qq, ms=900)
+            time.sleep(0.9 + REPEAT_DWELL)
+            g = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
+            if g is None or g[1] > MISS_MM:
+                raise RuntimeError("touch: tip not measured")
+            return g
+
+        for h in TOUCH_STEPS_MM if touch else ():
+            # z stays as commanded from the 10 mm correction; xy keeps being corrected; contact = the tip stops sinking.
+            # One pan pulse is ~0.8 mm sideways out here and the error jumped 0.8 <-> 1.8 mm from try to try
+            # (2026-10-30): up to HOVER_TRIES per height, the best one kept
+            goal = np.array([goal_xy[0], goal_xy[1], -h])
+            tries = []
+            for attempt in range(HOVER_TRIES):
+                q, resid = aim_solve(models["calibrated"], goal + corr, q)
+                if tries and attempt == HOVER_TRIES - 1 and min(t[0] for t in tries) <= TOUCH_XY_MM:
+                    _, best_q, _, best_corr = min(tries, key=lambda t: t[0])  # last chance: the best command seen
+                    q, corr[:] = dict(best_q), best_corr
+                tried_corr = corr.copy()
+                got = place(q)
+                err = got[0] - goal
+                tries.append((float(np.linalg.norm(err[:2])), dict(q), got, tried_corr))
+                rows.append({"touch_mm": h, "attempt": attempt, "goal_mm": goal.tolist(), "corr_mm": corr.tolist(),
+                             "cmd": {str(k): v for k, v in q.items()}, "read": {str(k): int(v) for k, v in read().items()},
+                             "tip_mm": got[0].tolist(), "miss_mm": got[1], "px": measure.px})
+                print(f"touch {h:+.0f} mm try {attempt}: cmd {[q[k] for k in (1, 2, 3, 4)]} tip height "
+                      f"{-got[0][2]:.1f} mm, error xy {tries[-1][0]:.2f} mm", flush=True)
+                if tries[-1][0] <= TOUCH_GOOD_MM:
+                    break
+                corr[:2] -= err[:2]
+            if tries[-1][0] > TOUCH_XY_MM:
+                raise RuntimeError(f"{tries[-1][0]:.1f} mm off the crossing at {h:.0f} mm: not dotting")
+            height = float(-tries[-1][2][0][2])
+            if last is not None and last - height < CONTACT_MM and h <= 2.0:
+                print(f"contact: the tip stopped at {height:.1f} mm (dot)", flush=True)
+                cv2.imwrite(str(out.with_suffix(".touch.top.jpg")), top.frame())
+                cv2.imwrite(str(out.with_suffix(".touch.side.jpg")), side.frame())
+                time.sleep(1.0)
+                break
+            last = height
+        print("lifting", flush=True)
     finally:
         send({**q, 2: q[2] + 40, 3: q[3] + 40}, ms=1500)  # straight up first, away from the paper
         time.sleep(2.0)
+        if touch:
+            dot = ink_dot(top.frame(), urig, goal_xy)
+            msg = "no ink dot within 6 mm" if dot is None else (
+                f"ink dot at {np.round(dot, 2).tolist()} mm: {np.linalg.norm(dot - np.asarray(goal_xy)):.2f} mm from the crossing")
+            print(msg, flush=True)
+            rows.append({"dot_mm": None if dot is None else dot.tolist()})
+            cv2.imwrite(str(out.with_suffix(".dot.jpg")), top.frame())
         top.close()
         side.close()
         SCRATCH.unlink(missing_ok=True)
@@ -940,11 +1012,11 @@ def aim(n: int = 10) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "fit-tie", "aim", "hover", "selftest", "repeat", "repeat-report"))
+    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "fit-tie", "aim", "hover", "dot", "selftest", "repeat", "repeat-report"))
     ap.add_argument("data", nargs="*", type=Path, default=[DATA])
     args = ap.parse_args()
     {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data[0]), "repeat": repeat,
-     "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim, "hover": hover,
+     "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim, "hover": hover, "dot": lambda: hover(touch=True),
      "repeat-report": lambda: repeat_report(args.data[0])}[args.cmd]()
 
 
