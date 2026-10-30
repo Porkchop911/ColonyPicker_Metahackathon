@@ -175,6 +175,13 @@ def cameras():
     from rig_io import OVERHEAD, SIDE, SIDE_PAPER, Camera
     predictor = sam.load()
     det = lambda path, q, th: sam.detect(predictor, path, q, th)  # noqa: E731
+    import hue
+    # the light first: the grid check, the exposure lock (at open) and the ink colour all depend on it (both lamps were
+    # found off, then a sweep left them white, and the grid check failed, 2026-10-30)
+    bri, ct = json.loads(LAMPS.read_text()) if LAMPS.exists() else LAMP_DEFAULT
+    hue.set_light("12", False)
+    hue.set_light("13", True, bri=bri, ct=ct)
+    time.sleep(1.0)
     top, side = Camera(OVERHEAD), Camera(SIDE, paper_target=SIDE_PAPER)
     img = top.frame()
     import plate_rig as prig
@@ -277,6 +284,7 @@ def cameras():
 
 
 TIP_MIN_PX = 200  # overhead ink blob: the tip is 800-1700 px; a 60 px tint at the plate's corner met junk (2026-10-30)
+TIP_MAX_PX = 4000  # ... and under whiter light the 96-well plate read as one 5000-20000 px "ink" blob (2026-10-30)
 TEAL = ((40, 25, 60), (110, 255, 255))  # HSV range of the tip ink (upright_touch_session)
 
 
@@ -333,6 +341,22 @@ def needle_end(frame: np.ndarray, bg: np.ndarray) -> np.ndarray | None:
     return np.array([us[vs == vs.max()].mean(), vs.max()], float)
 
 
+def needle_ends(frame: np.ndarray, bg: np.ndarray) -> list[np.ndarray]:
+    """Overhead: the lowest pixel of each changed blob >= 1500 px against `bg` (taken with the needle elsewhere): the
+    needle points down the image here, so its lowest pixel is the tip; the blob where the needle was in `bg` comes along
+    too and is rejected by the ray check."""
+    blur = lambda img: cv2.GaussianBlur(img, (5, 5), 0).astype(np.int16)  # noqa: E731
+    d = cv2.morphologyEx((np.abs(blur(frame) - blur(bg)).max(axis=2) > 30).astype(np.uint8), cv2.MORPH_OPEN,
+                         np.ones((3, 3), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(d)
+    out = []
+    for j in range(1, n):
+        if st[j, 4] >= 1500:
+            vs, us = np.nonzero(lab == j)
+            out.append(np.array([us[vs == vs.max()].mean(), vs.max()], float))
+    return out
+
+
 def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     """Inked tip in the sheet frame (mm, z down) from SAM's needle end in the side view and an overhead teal blob whose
     rays meet. SAM returns nothing on ~half the frames at START (2026-10-30): callers retry on fresh frames.
@@ -372,10 +396,12 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     # overhead: only over the paper: the cyan line art on the box at its right edge met the side ray to 0.01 mm 110 mm
     # from the tip (2026-10-30)
     tf = top.frame()
-    tops = [(px, a) for px, a in teal_ends(tf, on_paper=True) if a >= TIP_MIN_PX]
+    tops = [(px, a) for px, a in teal_ends(tf, on_paper=True) if TIP_MIN_PX <= a <= TIP_MAX_PX]
     # off the paper only when nothing is on it: at 40 mm over the far crossings the overhead sees the tip against the
     # wood beyond the sheet (2026-10-30); the rays must still meet
-    tops = tops or [(px, a) for px, a in teal_ends(tf, on_paper=False) if a >= TIP_MIN_PX]
+    tops = tops or [(px, a) for px, a in teal_ends(tf, on_paper=False) if TIP_MIN_PX <= a <= TIP_MAX_PX]
+    if measure.top_bg is not None:  # the needle's end by difference: thin, worn ink over wood read as no colour at all
+        tops = tops + [(px, 0) for px in needle_ends(tf, measure.top_bg)]
     if not tops:
         print("tip not found: no teal in the overhead view", flush=True)
         return None
@@ -385,6 +411,9 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     p3, miss, _, tpx, spx = max(fit, key=lambda c: c[2]) if fit else min(cands, key=lambda c: c[1])
     measure.px = (tpx.tolist(), spx.tolist())  # the pixels behind the last result, for a fit in image space
     return p3, miss
+
+
+measure.top_bg = None  # an overhead frame with the needle elsewhere: enables the difference end (set by hover)
 
 
 COLLECT_N = 200     # poses (plan step 2)
@@ -430,12 +459,70 @@ def low_plan(n: int, rise, height: float, seed: int = 0) -> list[tuple[dict, dic
     return [(pre, q, s) for pre, q, s in approach_plan(order, seed + 1) if safe(pre)]
 
 
+LAMPS = Path("evidence/tip/lamps.json")  # the last rig-lamp setting auto_lamps accepted
+# lamp 13 (Hue Play 2, over the rig) settings tried in order: brightness x colour temperature (mired). Sweep 2026-10-30:
+# brightness 254 (or lamp 12 on) overexposes the locked overhead and the ruling vanishes (2-90 crossings); at 160 it
+# finds 750-1050. The ink is found by hue relative to the paper, so the colour matters too
+LAMP_GRID = [(bri, ct) for bri in (160, 120, 90) for ct in (153, 250, 350, 454, 500)]
+LAMP_CROSSINGS = 600  # ruling crossings the overhead must still see under a setting
+LAMP_OK = 5  # of 5 measurements at START: tip found, rays within 1 mm
+LAMP_DEFAULT = (160, 153)  # most crossings in the sweep (1045): the grid light
+
+
+def auto_lamps(top, side, det, urig, srig) -> tuple[int, int, np.ndarray]:
+    """Set the rig lamps so the inked tip is found: at START (from REPEAT_AWAY above), the cached setting first, else
+    LAMP_GRID in order, keeping the first that finds the tip LAMP_OK of 5 times with the rays within 1 mm (best one if
+    none does). The run that needs it then takes its side background under that light. 2026-10-30: both lamps had been
+    switched off and the tip was lost at 40 mm."""
+    import hue
+    import paper_grid as pg
+    from tip_descend import send
+    send({**START, **{k: START[k] + REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
+    time.sleep(1.0)
+    send(START, ms=800)
+    time.sleep(0.8 + REPEAT_DWELL)
+    # the ruling and the ink want different light (ct 153: 985 crossings, tip 0/5; ct 350: tip 5/5 but 2 crossings near
+    # the far goal, 2026-10-30): one overhead frame under the grid light for finding printed crossings, which do not move
+    hue.set_light("12", False)
+    hue.set_light("13", True, bri=LAMP_DEFAULT[0], ct=LAMP_DEFAULT[1])
+    time.sleep(1.0)
+    top.frame()
+    grid_frame = top.frame()
+    cached = [tuple(json.loads(LAMPS.read_text()))] if LAMPS.exists() else []
+    best = None
+    for bri, ct in cached + [g for g in LAMP_GRID if g not in cached]:
+        hue.set_light("12", False)
+        hue.set_light("13", True, bri=bri, ct=ct)
+        time.sleep(1.0)
+        top.frame(), side.frame()  # flush frames taken under the old light
+        crossings = len(pg.crossings(pg.ruling_mask(top.frame())))
+        if crossings < LAMP_CROSSINGS:
+            print(f"lamps 13 at bri {bri} ct {ct}: {crossings} crossings, skipped", flush=True)
+            continue
+        got = [measure(top, side, det, urig, srig) for _ in range(5)]
+        good = [g[1] for g in got if g is not None and g[1] <= 1.0]
+        print(f"lamps 13 at bri {bri} ct {ct}: {crossings} crossings, tip {len(good)}/5", flush=True)
+        if best is None or len(good) > best[0]:
+            best = (len(good), (bri, ct))
+        if len(good) >= LAMP_OK:
+            break
+    if best is None or best[0] == 0:
+        raise RuntimeError("no lamp setting shows both the ruling and the inked tip: ink the tip?")
+    bri, ct = best[1]
+    hue.set_light("13", True, bri=bri, ct=ct)
+    time.sleep(1.0)
+    LAMPS.write_text(json.dumps([bri, ct]))
+    print(f"lamps: 13 at bri {bri} ct {ct}, 12 off ({best[0]}/5 at START)", flush=True)
+    return bri, ct, grid_frame
+
+
 def collect() -> None:
     """Drive COLLECT_N poses, each reached from a random side per joint, triangulate the inked tip at each (overhead
     teal tip + side SAM tip); command, read-back, previous position, approach and dwell logged; START re-measured
     every ANCHOR_EVERY poses."""
     from tip_descend import read, send
     top, side, det, urig, srig = cameras()
+    auto_lamps(top, side, det, urig, srig)
     bg = side_background(side)
     rows, anchor0, drifted = [], None, 0
     # both camera poses in this run's sheet frame: a fit in image space reprojects the model tip into each
@@ -567,6 +654,7 @@ def repeat() -> None:
     from tip_descend import read, send
     out = Path(f"evidence/tip/arm_repeat_{time.strftime('%Y%m%dT%H%M%S')}.json")
     top, side, det, urig, srig = cameras()
+    auto_lamps(top, side, det, urig, srig)
     bg = side_background(side)
     rows = []
     try:
@@ -833,6 +921,9 @@ def ink_dot(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarray] | N
     return min(near, key=lambda sp: np.linalg.norm(sp[1] - np.asarray(goal_xy))) if near else None
 
 
+PRINTED = Path("evidence/tip/printed_crossings.json")  # goal -> last fitted printed crossing (sheet mm)
+
+
 def local_crossing(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The printed crossing nearest goal_xy, found in the overhead image: the global lattice was ~2 mm off the ruling
     near the sheet's far edge (fits 0.8 px overall; paper not flat there, 2026-10-30), so a homography is fitted to the
@@ -846,14 +937,23 @@ def local_crossing(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarr
     obj, _ = prig.snap(prig.undistort(pts, k, d), k, r, t)
     tgt = cv2.projectPoints(np.array([[goal_xy[0], goal_xy[1], 0.0]]), r, t, k, d)[0][0, 0]
     near = np.linalg.norm(pts - tgt, axis=1) < 150.0
+    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}"
+    cache = json.loads(PRINTED.read_text()) if PRINTED.exists() else {}
     if near.sum() < 12:
-        raise RuntimeError(f"only {near.sum()} crossings detected around the goal")
+        # the far corner's ruling is lost under some lamp settings (0-2 crossings, 2026-10-30); the printed crossing
+        # does not move in the sheet frame (5 runs within +-0.2 mm), so the last fit stands in, without the homography
+        if key not in cache:
+            raise RuntimeError(f"only {near.sum()} crossings detected around the goal, none cached")
+        print(f"only {near.sum()} crossings around the goal: printed crossing from the cache", flush=True)
+        return np.array(cache[key]), None, None
     hom, _ = cv2.findHomography((obj[near, :2] / pg.SQUARE_MM).astype(np.float32), pts[near].astype(np.float32),
                                 cv2.RANSAC, 2.0)
     lat = cv2.perspectiveTransform(tgt.reshape(1, 1, 2).astype(np.float64), np.linalg.inv(hom))[0, 0]
     cross = np.round(lat)
     px = cv2.perspectiveTransform(cross.reshape(1, 1, 2), hom)[0, 0]
-    return tt.on_sheet(px, k, d, r, t)[:2], hom, cross
+    printed = tt.on_sheet(px, k, d, r, t)[:2]
+    PRINTED.write_text(json.dumps({**cache, key: printed.tolist()}))
+    return printed, hom, cross
 
 
 def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
@@ -864,13 +964,15 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
     from tip_descend import read, send
     models = {"calibrated": np.array(json.loads(ARM_MODEL.read_text())["session"])}
     top, side, det, urig, srig = cameras()
+    grid_frame = auto_lamps(top, side, det, urig, srig)[2]
     bg = side_background(side)
+    measure.top_bg = top.frame()  # needle lifted over START, far from the crossings
     rows = []
     out = Path(f"evidence/tip/arm_hover_{time.strftime('%Y%m%dT%H%M%S')}.json")
     q = dict(START)
     try:
         anchor(models, top, side, det, urig, srig, bg)
-        printed, hom, cross = local_crossing(top.frame(), urig, goal_xy)
+        printed, hom, cross = local_crossing(grid_frame, urig, goal_xy)
         print(f"printed crossing nearest {goal_xy}: {np.round(printed, 2).tolist()} mm "
               f"({np.linalg.norm(printed - np.asarray(goal_xy)):.2f} mm off the lattice's)", flush=True)
         goal_xy = tuple(printed)
@@ -905,15 +1007,19 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
         time.sleep(2.0)
         last = None
 
-        def place(qq: dict):
+        def place(qq: dict, blind_ok: bool = False):
             send({**qq, 2: qq[2] + 15, 3: qq[3] + 15}, ms=900)  # from just above, straight down
             time.sleep(1.0)
             send(qq, ms=900)
             time.sleep(0.9 + REPEAT_DWELL)
             g = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
             if g is None or g[1] > MISS_MM:
+                if blind_ok:
+                    return None
                 raise RuntimeError("touch: tip not measured")
             return g
+
+        blind = 0
 
         for h in TOUCH_STEPS_MM if touch else ():
             # z stays as commanded from the 10 mm correction; xy keeps being corrected; contact = the tip stops sinking.
@@ -927,7 +1033,14 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                     _, best_q, _, best_corr = min(tries, key=lambda t: t[0])  # last chance: the best command seen
                     q, corr[:] = dict(best_q), best_corr
                 tried_corr = corr.copy()
-                got = place(q)
+                # a fresh wet drop near the paper fell out of the overhead's colour range at 2 mm (2026-10-30): the last
+                # 2 mm go on blind from a pose measured within ~1 mm, no further correction
+                got = place(q, blind_ok=h <= 2.0)
+                if got is None:
+                    blind += 1
+                    print(f"touch {h:+.0f} mm: tip not seen, going on blind ({blind})", flush=True)
+                    tries = [(0.0, dict(q), None, tried_corr)]
+                    break
                 err = got[0] - goal
                 tries.append((float(np.linalg.norm(err[:2])), dict(q), got, tried_corr))
                 rows.append({"touch_mm": h, "attempt": attempt, "goal_mm": goal.tolist(), "corr_mm": corr.tolist(),
@@ -938,6 +1051,14 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                 if tries[-1][0] <= TOUCH_GOOD_MM:
                     break
                 corr[:2] -= err[:2]
+            if tries[-1][2] is None:  # blind step
+                if h <= 0.0 or blind >= 2:
+                    print(f"blind touch at commanded {h:+.0f} mm (dot)", flush=True)
+                    cv2.imwrite(str(out.with_suffix(".touch.top.jpg")), top.frame())
+                    cv2.imwrite(str(out.with_suffix(".touch.side.jpg")), side.frame())
+                    time.sleep(1.0)
+                    break
+                continue
             if tries[-1][0] > TOUCH_XY_MM:
                 raise RuntimeError(f"{tries[-1][0]:.1f} mm off the crossing at {h:.0f} mm: not dotting")
             height = float(-tries[-1][2][0][2])
@@ -955,8 +1076,15 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
         time.sleep(2.0)
         if touch:
             dot = ink_dot(top.frame(), urig, goal_xy)
-            if dot is None:
-                print("no ink dot within 3 mm", flush=True)
+            if dot is not None and hom is None:  # scoring needs the local grid: try the frame after the lift
+                try:
+                    hom, cross = local_crossing(top.frame(), urig, goal_xy)[1:]
+                except RuntimeError:
+                    pass
+            if dot is None or hom is None:
+                print("no ink dot within 3 mm" if dot is None else
+                      f"ink dot {np.linalg.norm(dot[1] - np.asarray(goal_xy)):.2f} mm from the cached printed crossing",
+                      flush=True)
                 rows.append({"dot_mm": None})
             else:
                 lat = cv2.perspectiveTransform(dot[0].reshape(1, 1, 2).astype(np.float64), np.linalg.inv(hom))[0, 0]
@@ -981,6 +1109,7 @@ def aim(n: int = 10) -> None:
     model_json = json.loads(ARM_MODEL.read_text())
     models = {"nominal": np.array(model_json["nominal_session"]), "calibrated": np.array(model_json["session"])}
     top, side, det, urig, srig = cameras()
+    auto_lamps(top, side, det, urig, srig)
     bg = side_background(side)
     up = {k: ca.APPROACH for k in (1, 2, 3, 4)}
     anchor(models, top, side, det, urig, srig, bg)
