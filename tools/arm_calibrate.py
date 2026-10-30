@@ -820,17 +820,40 @@ TOUCH_GOOD_MM = 1.0  # a try this close goes on down
 CONTACT_MM = 0.3    # a commanded mm down that moves the tip less than this: it is on the paper
 
 
-def ink_dot(img: np.ndarray, urig, goal_xy) -> np.ndarray | None:
-    """The ink dot on the paper nearest the goal (sheet mm), from the overhead after the needle has left: centroid of
-    the teal blobs (relative hue as teal_ends) within 6 mm of the goal."""
+def ink_dot(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarray] | None:
+    """The ink dot on the paper nearest the goal, from the overhead after the needle has left: (pixel, sheet mm) of the
+    teal blob centroid (relative hue as teal_ends) within 3 mm of the goal (an earlier dot sits one square away)."""
     import tip_triangulate as tt
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     lo = (min(TEAL[0][0], int(np.median(hsv[..., 0][gray > np.percentile(gray, 70)])) + 8), *TEAL[0][1:])
     n, lab, st, cen = cv2.connectedComponentsWithStats(cv2.inRange(hsv, lo, TEAL[1]))
-    spots = [tt.on_sheet(cen[j], *urig)[:2] for j in range(1, n) if st[j, 4] >= 6]
-    near = [s for s in spots if np.linalg.norm(s - np.asarray(goal_xy)) <= 6.0]
-    return min(near, key=lambda s: np.linalg.norm(s - np.asarray(goal_xy))) if near else None
+    spots = [(cen[j], tt.on_sheet(cen[j], *urig)[:2]) for j in range(1, n) if st[j, 4] >= 6]
+    near = [sp for sp in spots if np.linalg.norm(sp[1] - np.asarray(goal_xy)) <= 3.0]
+    return min(near, key=lambda sp: np.linalg.norm(sp[1] - np.asarray(goal_xy))) if near else None
+
+
+def local_crossing(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The printed crossing nearest goal_xy, found in the overhead image: the global lattice was ~2 mm off the ruling
+    near the sheet's far edge (fits 0.8 px overall; paper not flat there, 2026-10-30), so a homography is fitted to the
+    detected crossings within 150 px and the nearest whole crossing taken. Returns (sheet xy through the same camera
+    model the tip is measured with, so a local frame error cancels; the homography lattice -> pixel; its crossing)."""
+    import paper_grid as pg
+    import plate_rig as prig
+    import tip_triangulate as tt
+    k, d, r, t = (np.asarray(v, float) for v in urig)
+    pts = pg.crossings(pg.ruling_mask(img))
+    obj, _ = prig.snap(prig.undistort(pts, k, d), k, r, t)
+    tgt = cv2.projectPoints(np.array([[goal_xy[0], goal_xy[1], 0.0]]), r, t, k, d)[0][0, 0]
+    near = np.linalg.norm(pts - tgt, axis=1) < 150.0
+    if near.sum() < 12:
+        raise RuntimeError(f"only {near.sum()} crossings detected around the goal")
+    hom, _ = cv2.findHomography((obj[near, :2] / pg.SQUARE_MM).astype(np.float32), pts[near].astype(np.float32),
+                                cv2.RANSAC, 2.0)
+    lat = cv2.perspectiveTransform(tgt.reshape(1, 1, 2).astype(np.float64), np.linalg.inv(hom))[0, 0]
+    cross = np.round(lat)
+    px = cv2.perspectiveTransform(cross.reshape(1, 1, 2), hom)[0, 0]
+    return tt.on_sheet(px, k, d, r, t)[:2], hom, cross
 
 
 def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
@@ -847,6 +870,10 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
     q = dict(START)
     try:
         anchor(models, top, side, det, urig, srig, bg)
+        printed, hom, cross = local_crossing(top.frame(), urig, goal_xy)
+        print(f"printed crossing nearest {goal_xy}: {np.round(printed, 2).tolist()} mm "
+              f"({np.linalg.norm(printed - np.asarray(goal_xy)):.2f} mm off the lattice's)", flush=True)
+        goal_xy = tuple(printed)
         corr = np.zeros(3)
         for h in HOVER_STEPS_MM:
             goal = np.array([goal_xy[0], goal_xy[1], -h])
@@ -914,7 +941,8 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             if tries[-1][0] > TOUCH_XY_MM:
                 raise RuntimeError(f"{tries[-1][0]:.1f} mm off the crossing at {h:.0f} mm: not dotting")
             height = float(-tries[-1][2][0][2])
-            if last is not None and last - height < CONTACT_MM and h <= 2.0:
+            # a stall alone fooled it at 1.9 mm (servo deadband on a 1 mm step, no dot): a stall counts only near the paper
+            if h <= 2.0 and (height <= 0.3 or (last is not None and last - height < CONTACT_MM and height <= 1.0)):
                 print(f"contact: the tip stopped at {height:.1f} mm (dot)", flush=True)
                 cv2.imwrite(str(out.with_suffix(".touch.top.jpg")), top.frame())
                 cv2.imwrite(str(out.with_suffix(".touch.side.jpg")), side.frame())
@@ -927,10 +955,16 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
         time.sleep(2.0)
         if touch:
             dot = ink_dot(top.frame(), urig, goal_xy)
-            msg = "no ink dot within 6 mm" if dot is None else (
-                f"ink dot at {np.round(dot, 2).tolist()} mm: {np.linalg.norm(dot - np.asarray(goal_xy)):.2f} mm from the crossing")
-            print(msg, flush=True)
-            rows.append({"dot_mm": None if dot is None else dot.tolist()})
+            if dot is None:
+                print("no ink dot within 3 mm", flush=True)
+                rows.append({"dot_mm": None})
+            else:
+                lat = cv2.perspectiveTransform(dot[0].reshape(1, 1, 2).astype(np.float64), np.linalg.inv(hom))[0, 0]
+                off = (lat - cross) * 5.0  # local lattice units -> mm
+                print(f"ink dot {np.linalg.norm(off):.2f} mm from the printed crossing (local grid: "
+                      f"{np.round(off, 2).tolist()} mm); {np.linalg.norm(dot[1] - np.asarray(goal_xy)):.2f} mm from the "
+                      f"goal by the camera model", flush=True)
+                rows.append({"dot_px": dot[0].tolist(), "dot_mm": dot[1].tolist(), "dot_off_printed_mm": off.tolist()})
             cv2.imwrite(str(out.with_suffix(".dot.jpg")), top.frame())
         top.close()
         side.close()
