@@ -197,9 +197,13 @@ def cameras():
 
     # side_rig tries every 4 marks x 4 dots: > 15 min with 12 dots. So: random 6-dot subsets (~15 s each), each refined on
     # all dots, until one fits 80 % (one farthest-first subset alone fit 8/12 and put the tip 1.8 mm up instead of ~50).
-    # Cached: the camera does not move.
+    # Cached: the camera does not move. Never refit over a cache: the regular 2x4 dot block lets a shifted pose fit as
+    # well (11 dots, 0.46 px, centre 47 mm off) and a refit at 14:47 broke every measurement (2026-10-30).
     srig = json.loads(SIDE_CACHE.read_text()) if SIDE_CACHE.exists() else None
-    if srig is None or agree(srig) < 0.8 * len(sheet) or not plausible(srig):
+    if srig is not None and agree(srig) < 0.6 * len(sheet):
+        raise RuntimeError(f"side pose cache fits only {agree(srig)}/{len(sheet)} dots: camera or sheet moved? "
+                           f"delete {SIDE_CACHE} to refit, then check a measured tip by eye")
+    if srig is None:
         rng, best = np.random.default_rng(), None
         for attempt in range(20):
             pick = rng.choice(len(sheet), min(6, len(sheet)), replace=False)
@@ -225,54 +229,64 @@ def cameras():
 TEAL = ((40, 25, 60), (110, 255, 255))  # HSV range of the tip ink (upright_touch_session)
 
 
-def measure(top, side, det, urig, srig):
-    """Inked tip in the sheet frame (mm, z down): side SAM needle end, then the overhead teal blob whose ray best meets
-    the side ray (old ink on the paper does not line up; upright_touch_session.measure). (p3, miss mm), or None."""
-    import tip_triangulate as tt
-    sf = side.frame()
-    cv2.imwrite(str(SCRATCH), sf)
-    found = det(str(SCRATCH), "thin metal needle", 0.15)
-    if not found:
-        print("tip not found: no needle in the side view", flush=True)
-        return None
-    vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
-    k = int(np.argmax(vs))
-    spx = np.array([us[k], vs[k]], float)
-    # SAM's needle mask stops where a thick ink bulb begins: the bulb's lowest teal pixel within 60 px is the real end
-    xs, ys = int(spx[0]), int(spx[1])
-    wx, wy = max(0, xs - 60), max(0, ys - 30)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(sf[wy:ys + 60, wx:xs + 60], cv2.COLOR_BGR2HSV), *TEAL))
-    # touching SAM's end (a pixel within 6 px of it): just above the paper the window also holds old ink on the paper,
-    # which moved a 64 mm tip to 36 mm (2026-10-30)
-    # A bulb also ends within 20 px below it: paper ink can touch the needle end in the image and dragged it 59 px down
-    near = [j for j in range(1, n) if st[j, 4] >= 6 and st[j, 1] + st[j, 3] + wy <= ys + 20
-            and np.min(np.hypot(*(np.nonzero(lab == j)[::-1] + np.array([[wx], [wy]]) - spx[:, None]))) <= 6.0]
-    if near:
-        ty, tx = np.nonzero(lab == max(near, key=lambda j: st[j, 4]))
-        spx = np.array([tx[ty == ty.max()].mean() + wx, ty.max() + wy], float)
-    side_ray = tt.ray(spx, *srig)
-    tf = top.frame()
-    # only blobs over the paper: the cyan line art on the box at the overhead's right edge met the side ray to 0.01 mm
-    # 110 mm from the tip (2026-10-30). Paper = convex hull of the biggest bright area (as tt.side_marks finds it).
-    gray = cv2.cvtColor(tf, cv2.COLOR_BGR2GRAY)
-    _, plab, pst, _ = cv2.connectedComponentsWithStats((gray > 0.8 * np.percentile(gray, 90)).astype(np.uint8))
-    pys, pxs = np.nonzero(plab == 1 + int(np.argmax(pst[1:, 4])))
-    paper = cv2.convexHull(np.column_stack([pxs, pys]).astype(np.int32))
-    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(tf, cv2.COLOR_BGR2HSV), *TEAL))
-    cands = []  # (p3, miss, area)
+def paper_hull(img: np.ndarray) -> np.ndarray:
+    """Convex hull of the biggest bright area: the paper (as tt.side_marks finds it)."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, lab, st, _ = cv2.connectedComponentsWithStats((gray > 0.8 * np.percentile(gray, 90)).astype(np.uint8))
+    ys, xs = np.nonzero(lab == 1 + int(np.argmax(st[1:, 4])))
+    return cv2.convexHull(np.column_stack([xs, ys]).astype(np.int32))
+
+
+def teal_ends(img: np.ndarray, on_paper: bool, min_px: int = 6) -> list[tuple[np.ndarray, int]]:
+    """(lowest pixel, area) of each teal blob, over the paper (`on_paper`) or off it."""
+    paper = paper_hull(img)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), *TEAL))
+    out = []
     for j in range(1, n):
-        if st[j, 4] < 6:
+        if st[j, 4] < min_px:
             continue
         vs, us = np.nonzero(lab == j)
         px = np.array([us[vs == vs.max()].mean(), vs.max()])
-        if cv2.pointPolygonTest(paper, (float(px[0]), float(px[1])), False) < 0:
-            continue
-        cands.append((*tt.meet(tt.ray(px, *urig), side_ray), int(st[j, 4])))
-    if not cands:
+        if (cv2.pointPolygonTest(paper, (float(px[0]), float(px[1])), False) >= 0) == on_paper:
+            out.append((px, int(st[j, 4])))
+    return out
+
+
+def measure(top, side, det, urig, srig):
+    """Inked tip in the sheet frame (mm, z down) from SAM's needle end in the side view and an overhead teal blob whose
+    rays meet. SAM returns nothing on ~half the frames at START (2026-10-30): callers retry on fresh frames.
+    Overhead: teal blobs over the paper only. Of the blobs that meet to MISS_MM the biggest wins (old ink spots ~170 px
+    lined up too, the tip is ~1500 px); none -> the closest, which the caller rejects by its miss. (p3, miss), or None."""
+    import tip_triangulate as tt
+    sf = side.frame()
+    cv2.imwrite(str(SCRATCH), sf)
+    # second prompt as upright_touch_session; a teal-colour fallback paired box art with the tip (y 13-50 mm off)
+    found = det(str(SCRATCH), "thin metal needle", 0.15) or det(str(SCRATCH), "black stick", 0.3)
+    if found:
+        vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
+        k = int(np.argmax(vs))
+        spx = np.array([us[k], vs[k]], float)
+        # SAM's mask stops where a thick ink bulb begins: the bulb's lowest teal pixel is the real end. The bulb touches
+        # SAM's end (6 px) and ends within 20 px below it: paper ink touching the end in the image dragged it 59 px down
+        xs, ys = int(spx[0]), int(spx[1])
+        wx, wy = max(0, xs - 60), max(0, ys - 30)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(sf[wy:ys + 60, wx:xs + 60], cv2.COLOR_BGR2HSV), *TEAL))
+        near = [j for j in range(1, n) if st[j, 4] >= 6 and st[j, 1] + st[j, 3] + wy <= ys + 20
+                and np.min(np.hypot(*(np.nonzero(lab == j)[::-1] + np.array([[wx], [wy]]) - spx[:, None]))) <= 6.0]
+        if near:
+            ty, tx = np.nonzero(lab == max(near, key=lambda j: st[j, 4]))
+            spx = np.array([tx[ty == ty.max()].mean() + wx, ty.max() + wy], float)
+        sides = [spx]
+    else:
+        print("tip not found: no needle in the side view", flush=True)
+        return None
+    # overhead: only over the paper: the cyan line art on the box at its right edge met the side ray to 0.01 mm 110 mm
+    # from the tip (2026-10-30)
+    tops = teal_ends(top.frame(), on_paper=True)
+    if not tops:
         print("tip not found: no teal in the overhead view", flush=True)
         return None
-    # the inked tip is the biggest teal blob that lines up: old ink spots (~170 px) met the side ray to 1-3 mm and put
-    # a tip 64 mm up at 22 mm (tip blob ~1500 px, 2026-10-30); none lining up -> the best miss, which the caller rejects
+    cands = [(*tt.meet(tt.ray(tpx, *urig), tt.ray(spx, *srig)), area) for spx in sides for tpx, area in tops]
     fit = [c for c in cands if c[1] <= MISS_MM]
     p3, miss, _ = max(fit, key=lambda c: c[2]) if fit else min(cands, key=lambda c: c[1])
     return p3, miss
@@ -356,7 +370,7 @@ def collect() -> None:
                 time.sleep(1.0)
                 send(START, ms=800)
                 time.sleep(0.8 + REPEAT_DWELL)
-                got = measure(top, side, det, urig, srig)
+                got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(3)) if g is not None), None)
                 if got is not None and got[1] <= MISS_MM:
                     anchor0 = got[0] if anchor0 is None else anchor0
                     off = float(np.linalg.norm(got[0] - anchor0))
@@ -377,7 +391,7 @@ def collect() -> None:
             send(q, ms=800)
             time.sleep(0.8 + REPEAT_DWELL)
             now = read()
-            got = measure(top, side, det, urig, srig)
+            got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(3)) if g is not None), None)
             if got is None:
                 continue
             p3, miss = got
