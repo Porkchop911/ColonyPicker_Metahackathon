@@ -910,8 +910,12 @@ HOVER_GOAL = (-5.0, 45.0)  # open-paper crossing nearest in joint motion (58 pul
 
 
 TOUCH_STEPS_MM = (8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0)  # below 10 mm: one try each, xy corrected
-TOUCH_XY_MM = 2.0   # best try off the crossing by more than this below 10 mm: lift instead of dotting the wrong place
+TOUCH_XY_MM = 3.0   # best try off by more than this below 10 mm: lift (readings near the paper scatter 1-2 mm; 2.0 aborted at the paper twice)
 TOUCH_GOOD_MM = 1.0  # a try this close goes on down
+DOT_OFFSETS = Path("evidence/tip/dot_offsets.json")  # sheet mm, mark minus printed crossing, one per dot
+# the side-row contact stop fired falsely or stopped above the paper; the two marks came from pressing to -1..-3 mm,
+# and their offsets are what the aim corrects: press like they did (2026-10-30)
+DOT_STOP_AT_CONTACT = False
 CONTACT_ROW = 0.4  # a 1 mm step down whose side-view tip row falls < 40 % of the rows/mm above 2 mm: on the paper
 CONTACT_MM = 0.3    # a commanded mm down that moves the tip less than this: it is on the paper
 
@@ -1006,6 +1010,12 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
         print(f"printed crossing nearest {goal_xy}: {np.round(printed, 2).tolist()} mm "
               f"({np.linalg.norm(printed - np.asarray(goal_xy)):.2f} mm off the lattice's)", flush=True)
         goal_xy = tuple(printed)
+        offsets = json.loads(DOT_OFFSETS.read_text()) if DOT_OFFSETS.exists() else []
+        if touch and offsets:  # aim off by the mean mark-minus-crossing offset of earlier dots (the pressed needle skids)
+            shift = np.mean(offsets, axis=0)
+            goal_xy = tuple(np.asarray(printed) - shift)
+            print(f"aiming {np.round(-shift, 2).tolist()} mm off the printed crossing (mean of {len(offsets)} marks)",
+                  flush=True)
         corr = np.zeros(3)
         for h in steps:
             corr = known.get(h, corr).copy()
@@ -1128,7 +1138,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             contact = (h <= 2.0 and per_mm is not None and per_mm > 0 and drow is not None and height <= 0.5
                        and -1.0 <= drow < CONTACT_ROW * per_mm * (side_rows[-1][0] - h))
             side_rows.append((h, row))
-            if contact:
+            if contact and DOT_STOP_AT_CONTACT:
                 print(f"contact: side row moved {row - side_rows[-2][1]:.1f} px for {side_rows[-2][0] - h:.0f} mm "
                       f"({per_mm:.1f} px/mm above), tip {height:.1f} mm, {time.time() - t0:.0f} s from the start (dot)",
                       flush=True)
@@ -1148,6 +1158,11 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             top.frame()
             after = top.frame()
             dot = new_mark(measure.top_bg, after, urig, goal_xy) or ink_dot(after, urig, goal_xy)  # old marks: in both
+            if dot is not None and touch:
+                mark_off = (dot[1] - np.asarray(printed)).tolist()  # what the next aim subtracts
+                DOT_OFFSETS.write_text(json.dumps(offsets + [mark_off]))
+                print(f"mark at {np.round(mark_off, 2).tolist()} mm from the printed crossing (camera model): "
+                      f"{np.linalg.norm(mark_off):.2f} mm", flush=True)
             if dot is not None and hom is None:  # scoring needs the local grid: try the frame after the lift
                 try:
                     hom, cross = local_crossing(top.frame(), urig, goal_xy)[1:]
