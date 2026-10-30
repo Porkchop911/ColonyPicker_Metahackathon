@@ -270,23 +270,81 @@ def measure(top, side, det, urig, srig):
     return best
 
 
+COLLECT_N = 200     # poses (plan step 2)
+ANCHOR_EVERY = 20   # START again, from the + side, every this many poses: drift check
+DRIFT_MM = 2.0      # an anchor this far from the first one twice in a row ends the run
+SAFE_MM = 25.0      # a pose or its pre-move the model puts lower than this (from the measured START height) is skipped
+
+
+def approach_plan(qs: list[dict], seed: int = 1) -> list[tuple[dict, dict, dict]]:
+    """(pre-move, target, approach sign per joint) for each pose. The sign is drawn per pose and joint, balanced and
+    independent of the pose (nearest-next order alone would tie it to the pose and let backlash soak up sag or gain
+    error; meta review 2026-10-30): the joint first goes REPEAT_AWAY pulses to the other side, then to the target."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for q in qs:
+        sign = {k: int(rng.choice((-1, 1))) for k in (1, 2, 3, 4)}
+        out.append(({**q, **{k: q[k] - sign[k] * REPEAT_AWAY for k in sign}}, q, sign))
+    return out
+
+
 def collect() -> None:
-    """Drive the poses, triangulate the inked tip at each (overhead teal tip + side SAM tip), save the data."""
+    """Drive COLLECT_N poses, each reached from a random side per joint, triangulate the inked tip at each (overhead
+    teal tip + side SAM tip); command, read-back, previous position, approach and dwell logged; START re-measured
+    every ANCHOR_EVERY poses."""
     from tip_descend import read, send
     top, side, det, urig, srig = cameras()
-    rows = []
+    rows, anchor0, drifted = [], None, 0
     try:
-        for i, q in enumerate(poses()):
-            send(q, ms=1200)
-            time.sleep(1.6)
+        send(START, ms=2500)
+        time.sleep(2.0)
+        got = measure(top, side, det, urig, srig)
+        if got is None:
+            raise RuntimeError("tip not found at START: ink the tip, check the lamps")
+        height = float(-got[0][2])
+        z0 = ca.tip_in_base(START, TIP_GUESS)[2]
+        low = lambda q: height + 1.5 * min(ca.tip_in_base(q, TIP_GUESS)[2] - z0, 0.0) < SAFE_MM  # noqa: E731
+        plan = approach_plan(poses(COLLECT_N))
+        print(f"START tip {height:.1f} mm up; {len(plan)} poses", flush=True)
+        for i, (pre, q, sign) in enumerate(plan):
+            if i % ANCHOR_EVERY == 0:
+                send({**START, **{k: START[k] - REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
+                time.sleep(1.0)
+                send(START, ms=800)
+                time.sleep(0.8 + REPEAT_DWELL)
+                got = measure(top, side, det, urig, srig)
+                if got is not None and got[1] <= MISS_MM:
+                    anchor0 = got[0] if anchor0 is None else anchor0
+                    off = float(np.linalg.norm(got[0] - anchor0))
+                    drifted = drifted + 1 if off > DRIFT_MM else 0
+                    print(f"anchor {i}: {off:.2f} mm from the first", flush=True)
+                    rows.append({"anchor": True, "cmd": {str(k): v for k, v in START.items()},
+                                 "read": {str(k): int(v) for k, v in read().items()}, "tip_mm": got[0].tolist(),
+                                 "miss_mm": got[1], "t": time.time()})
+                    if drifted >= 2:
+                        print("anchor moved twice: stopping", flush=True)
+                        break
+            if low(pre) or low(q):
+                print(f"{i:3d} skipped: the model puts it below {SAFE_MM:.0f} mm", flush=True)
+                continue
+            send(pre, ms=1000)
+            time.sleep(1.0)
+            prev = read()
+            send(q, ms=800)
+            time.sleep(0.8 + REPEAT_DWELL)
             now = read()
             got = measure(top, side, det, urig, srig)
             if got is None:
                 continue
             p3, miss = got
-            print(f"{i:2d} pulses {now} tip {np.round(p3, 1)} miss {miss:.1f} mm", flush=True)
+            print(f"{i:3d} cmd {[q[k] for k in (1, 2, 3, 4)]} read {[now[k] for k in (1, 2, 3, 4)]} "
+                  f"tip {np.round(p3, 1)} miss {miss:.1f} mm", flush=True)
             if miss <= MISS_MM:
-                rows.append({"pulses": {str(j): int(now[j]) for j in (1, 2, 3, 4, 5)}, "tip_mm": p3.tolist(), "miss_mm": miss})
+                rows.append({"pulses": {str(j): int(now[j]) for j in (1, 2, 3, 4, 5)},  # read-back: what fit uses
+                             "cmd": {str(j): int(q[j]) for j in (1, 2, 3, 4, 5)},
+                             "prev": {str(j): int(prev[j]) for j in (1, 2, 3, 4, 5)},
+                             "approach": {str(k): v for k, v in sign.items()}, "dwell_s": REPEAT_DWELL,
+                             "tip_mm": p3.tolist(), "miss_mm": miss, "t": time.time()})
             if -p3[2] < MIN_HEIGHT_MM:
                 print(f"tip {-p3[2]:.1f} mm up: ending the sweep", flush=True)
                 break
@@ -434,7 +492,7 @@ def repeat_report(path: Path) -> None:
 
 
 def fit_file(path: Path) -> None:
-    rows = json.loads(path.read_text())
+    rows = [r for r in json.loads(path.read_text()) if not r.get("anchor")]
     qs = [{int(k): v for k, v in r["pulses"].items()} for r in rows]
     seen = np.array([r["tip_mm"] for r in rows])
     p, rms = fit(qs, seen)
