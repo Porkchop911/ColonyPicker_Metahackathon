@@ -242,7 +242,11 @@ def measure(top, side, det, urig, srig):
     xs, ys = int(spx[0]), int(spx[1])
     wx, wy = max(0, xs - 60), max(0, ys - 30)
     n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(sf[wy:ys + 60, wx:xs + 60], cv2.COLOR_BGR2HSV), *TEAL))
-    near = [j for j in range(1, n) if st[j, 4] >= 6 and st[j, 1] + wy <= ys + 5]  # touching SAM's end, not a drip below
+    # touching SAM's end (a pixel within 6 px of it): just above the paper the window also holds old ink on the paper,
+    # which moved a 64 mm tip to 36 mm (2026-10-30)
+    # A bulb also ends within 20 px below it: paper ink can touch the needle end in the image and dragged it 59 px down
+    near = [j for j in range(1, n) if st[j, 4] >= 6 and st[j, 1] + st[j, 3] + wy <= ys + 20
+            and np.min(np.hypot(*(np.nonzero(lab == j)[::-1] + np.array([[wx], [wy]]) - spx[:, None]))) <= 6.0]
     if near:
         ty, tx = np.nonzero(lab == max(near, key=lambda j: st[j, 4]))
         spx = np.array([tx[ty == ty.max()].mean() + wx, ty.max() + wy], float)
@@ -255,7 +259,7 @@ def measure(top, side, det, urig, srig):
     pys, pxs = np.nonzero(plab == 1 + int(np.argmax(pst[1:, 4])))
     paper = cv2.convexHull(np.column_stack([pxs, pys]).astype(np.int32))
     n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(tf, cv2.COLOR_BGR2HSV), *TEAL))
-    best = None
+    cands = []  # (p3, miss, area)
     for j in range(1, n):
         if st[j, 4] < 6:
             continue
@@ -263,11 +267,15 @@ def measure(top, side, det, urig, srig):
         px = np.array([us[vs == vs.max()].mean(), vs.max()])
         if cv2.pointPolygonTest(paper, (float(px[0]), float(px[1])), False) < 0:
             continue
-        got = tt.meet(tt.ray(px, *urig), side_ray)
-        best = got if best is None or got[1] < best[1] else best
-    if best is None:
+        cands.append((*tt.meet(tt.ray(px, *urig), side_ray), int(st[j, 4])))
+    if not cands:
         print("tip not found: no teal in the overhead view", flush=True)
-    return best
+        return None
+    # the inked tip is the biggest teal blob that lines up: old ink spots (~170 px) met the side ray to 1-3 mm and put
+    # a tip 64 mm up at 22 mm (tip blob ~1500 px, 2026-10-30); none lining up -> the best miss, which the caller rejects
+    fit = [c for c in cands if c[1] <= MISS_MM]
+    p3, miss, _ = max(fit, key=lambda c: c[2]) if fit else min(cands, key=lambda c: c[1])
+    return p3, miss
 
 
 COLLECT_N = 200     # poses (plan step 2)
