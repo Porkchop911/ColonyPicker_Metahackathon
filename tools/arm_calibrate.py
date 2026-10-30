@@ -298,7 +298,7 @@ def collect() -> None:
     try:
         send(START, ms=2500)
         time.sleep(2.0)
-        got = measure(top, side, det, urig, srig)
+        got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)  # side SAM misses ~1 in 5
         if got is None:
             raise RuntimeError("tip not found at START: ink the tip, check the lamps")
         height = float(-got[0][2])
