@@ -404,7 +404,12 @@ def repeat_stats(rows: list[dict], boots: int = 1000, seed: int = 0) -> dict:
             if short:
                 res["creep_mm"] = float(np.mean([np.linalg.norm(np.array(r["tip_mm"]) - arm[r["side"]].mean(0)) for r in short]))
         out[str(j)] = res
-    worst = np.nanmax([v for j in REPEAT_JOINTS for v in out[str(j)]["scatter_mm"].values()] + [np.nan])
+    # judged on each joint's better side: placing always makes its last approach from that side (plan step 5)
+    for j in REPEAT_JOINTS:
+        sc = out[str(j)]["scatter_mm"]
+        out[str(j)]["approach"] = None if all(np.isnan(v) for v in sc.values()) else int(min(sc, key=lambda s: np.nan_to_num(sc[s], nan=np.inf)))
+    worst = np.nanmax([np.nanmin(list(out[str(j)]["scatter_mm"].values()) + [np.inf]) for j in REPEAT_JOINTS] + [np.nan])
+    worst = np.nan if np.isinf(worst) else worst
     out["worst_scatter_mm"] = float(worst)
     out["verdict"] = ("no data" if np.isnan(worst) else "go: calibrate" if worst <= 0.5 else
                       "go, tight for a 1 mm mark" if worst <= 1.0 else "stop: no model meets the 1 mm gate")
@@ -423,7 +428,8 @@ def repeat_report(path: Path) -> None:
         if "creep_mm" in r:
             line += f", {SHORT_DWELL} s dwell off by {r['creep_mm']:.2f} mm"
         print(line)
-    print(f"worst same-side scatter {stats['worst_scatter_mm']:.2f} mm -> {stats['verdict']}")
+    print(f"approach sides {[(j, stats[str(j)]['approach']) for j in REPEAT_JOINTS]}; worst scatter on those sides "
+          f"{stats['worst_scatter_mm']:.2f} mm -> {stats['verdict']}")
     path.with_suffix(".report.json").write_text(json.dumps(stats, indent=1))
 
 

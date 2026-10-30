@@ -187,3 +187,24 @@ The ink-mark gate (1 mm, 2 in a row, 4 of 5) is AGREED's and is not claimed here
 | 3 fit | no | 2-3 h | held-out RMS > 3 mm |
 | 4 residual | no | 1-2 h | not >= 0.5 mm better |
 | 5-6 use, check | yes | 1.5 h | `--calib` no better than nominal in the A/B |
+
+## Results
+
+**Gate 0, 2026-10-30, `evidence/tip/arm_repeat_20261030T141229.json` (run 6; runs 1-5 were measurement fixes):
+GO.** START, tip 84 mm up; 20-pulse excursions; overhead teal tip + side SAM needle, rays meet to 0.7-4.6 mm.
+
+| Joint | Scatter from + side | Scatter from - side | Side gap | Read-back after return, + / - | 0.4 s vs 1.6 s dwell |
+|---|---|---|---|---|---|
+| still (camera noise) | 0.20 mm | | | | |
+| pan (1) | 0.28 mm | **2.61 mm** (stick-slip) | 15.2 mm | 498 / 495-496 | 0.22 mm |
+| elbow (3) | 0.32 mm | 0.05 mm | 5.8 mm | 188 / 179 | 0.21 mm |
+| wrist (4) | 0.36 mm | 0.07 mm | 2.7 mm | 269 / 266 | 0.19 mm |
+| shoulder (2) | 0.12 mm | 0.63 mm | 8.3 mm | 417 / 407-409 | 0.47 mm |
+
+- From the + side every joint returns to the same point, (44.9, 18.0, -84.1) mm, within 0.4 mm. A fixed final
+  approach from + is repeatable to well under the 1 mm gate.
+- From the - side elbow, wrist and shoulder stop short, and **read-back shows it** (9, 3, 9 pulses): this is
+  servo position error before the read-back, so step 3's two-stage model (command -> read-back -> tip) can carry it.
+  Pan's 15 mm gap with only 2-3 pulses of read-back difference is slack after the read-back.
+- Settle 0.4 s is as good as 1.6 s (<= 0.5 mm): AGREED S2's short settles cost nothing here.
+- Pulses-per-mm in `repeat-report` use a guessed tip offset (`TIP_GUESS`); the mm numbers are measured.
