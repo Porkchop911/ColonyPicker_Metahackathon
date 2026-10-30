@@ -912,6 +912,7 @@ HOVER_GOAL = (-5.0, 45.0)  # open-paper crossing nearest in joint motion (58 pul
 TOUCH_STEPS_MM = (8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0)  # below 10 mm: one try each, xy corrected
 TOUCH_XY_MM = 2.0   # best try off the crossing by more than this below 10 mm: lift instead of dotting the wrong place
 TOUCH_GOOD_MM = 1.0  # a try this close goes on down
+CONTACT_ROW = 0.4  # a 1 mm step down whose side-view tip row falls < 40 % of the rows/mm above 2 mm: on the paper
 CONTACT_MM = 0.3    # a commanded mm down that moves the tip less than this: it is on the paper
 
 
@@ -961,6 +962,20 @@ def local_crossing(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarr
     printed = tt.on_sheet(px, k, d, r, t)[:2]
     PRINTED.write_text(json.dumps({**cache, key: printed.tolist()}))
     return printed, hom, cross
+
+
+def new_mark(before: np.ndarray | None, after: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarray] | None:
+    """A mark that appeared near the goal: the blob >= 15 px changed by > 25 between the overhead before the run (needle
+    lifted far off) and after the lift, nearest the goal within 4 mm: (pixel, sheet mm). The ink finder missed a fresh
+    olive mark under the tuned light (2026-10-30)."""
+    import tip_triangulate as tt
+    if before is None:
+        return None
+    blur = lambda img: cv2.GaussianBlur(img, (5, 5), 0).astype(np.int16)  # noqa: E731
+    n, _, st, cen = cv2.connectedComponentsWithStats((np.abs(blur(after) - blur(before)).max(axis=2) > 25).astype(np.uint8))
+    spots = [(cen[j], tt.on_sheet(cen[j], *urig)[:2]) for j in range(1, n) if st[j, 4] >= 15]
+    near = [sp for sp in spots if np.linalg.norm(sp[1] - np.asarray(goal_xy)) <= 4.0]
+    return min(near, key=lambda sp: np.linalg.norm(sp[1] - np.asarray(goal_xy))) if near else None
 
 
 def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
@@ -1028,6 +1043,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
         print(f"holding over {goal_xy} at 10 mm for the photos ({time.time() - t0:.0f} s from the start)", flush=True)
         time.sleep(0.5)
         last = None
+        side_rows = []  # (commanded height, side-view tip row) of each touch step
 
         def place(qq: dict, blind_ok: bool = False):
             send({**qq, 2: qq[2] + 15, 3: qq[3] + 15}, ms=900)  # from just above, straight down
@@ -1051,7 +1067,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             if h in known:
                 corr[:2] = known[h][:2]
             tries = []
-            for attempt in range(HOVER_TRIES):
+            for attempt in range(HOVER_TRIES if h > 1.0 else 1):  # each retry near the paper presses again
                 q, resid = aim_solve(models["calibrated"], goal + corr, q)
                 if tries and attempt == HOVER_TRIES - 1 and min(t[0] for t in tries) <= TOUCH_XY_MM:
                     _, best_q, _, best_corr = min(tries, key=lambda t: t[0])  # last chance: the best command seen
@@ -1097,10 +1113,21 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             height = float(-tries[-1][2][0][2])
             known[h] = corr.copy()
             poses[h] = dict(q)
-            # contact = the tip stops sinking near the paper. A stall alone fooled it at 1.9 mm (servo deadband), and a
-            # height <= 0.3 rule stopped short: 3 runs read -0.6..-1.2 mm and left no ink; the one mark came at -2.2 mm
-            # (the paper sits ~1-2 mm under the camera's plane in that corner, 2026-10-30)
-            if h <= 0.0 and last is not None and last - height < CONTACT_MM and height <= 1.0:
+            # contact = the first step whose side-view tip row falls less than CONTACT_ROW of the rows per mm seen above
+            # 2 mm. The triangulated height could not do it: <= 0.3 mm stopped above the paper (3 runs, no ink), a stall
+            # pressed on -1..-3 mm and the angled needle skidded the mark ~2.8 mm; in that run the row fell 3.7 px/mm
+            # to 1 mm, then 1 px from 1 to 0 mm (first contact), then crept 2-3 px per step (the skid) (2026-10-30)
+            row = float(measure.px[1][1])
+            rows.append({"side_row": row, "touch_mm": h})
+            fit = [(hh, rr) for hh, rr in side_rows if hh >= 2.0]
+            per_mm = -np.polyfit(*zip(*fit), 1)[0] if len(fit) >= 2 else None
+            contact = (h <= 2.0 and per_mm is not None and per_mm > 0 and side_rows
+                       and row - side_rows[-1][1] < CONTACT_ROW * per_mm * (side_rows[-1][0] - h))
+            side_rows.append((h, row))
+            if contact:
+                print(f"contact: side row moved {row - side_rows[-2][1]:.1f} px for {side_rows[-2][0] - h:.0f} mm "
+                      f"({per_mm:.1f} px/mm above), tip {height:.1f} mm, {time.time() - t0:.0f} s from the start (dot)",
+                      flush=True)
                 print(f"contact: the tip stopped at {height:.1f} mm (dot), {time.time() - t0:.0f} s from the start", flush=True)
                 cv2.imwrite(str(out.with_suffix(".touch.top.jpg")), top.frame())
                 cv2.imwrite(str(out.with_suffix(".touch.side.jpg")), side.frame())
@@ -1112,7 +1139,11 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
         send({**q, 2: q[2] + 40, 3: q[3] + 40}, ms=1500)  # straight up first, away from the paper
         time.sleep(2.0)
         if touch:
-            dot = ink_dot(top.frame(), urig, goal_xy)
+            send({**START, **{k: START[k] + REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1500)  # needle out of the picture
+            time.sleep(2.0)
+            top.frame()
+            after = top.frame()
+            dot = ink_dot(after, urig, goal_xy) or new_mark(measure.top_bg, after, urig, goal_xy)
             if dot is not None and hom is None:  # scoring needs the local grid: try the frame after the lift
                 try:
                     hom, cross = local_crossing(top.frame(), urig, goal_xy)[1:]
@@ -1130,7 +1161,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                       f"{np.round(off, 2).tolist()} mm); {np.linalg.norm(dot[1] - np.asarray(goal_xy)):.2f} mm from the "
                       f"goal by the camera model", flush=True)
                 rows.append({"dot_px": dot[0].tolist(), "dot_mm": dot[1].tolist(), "dot_off_printed_mm": off.tolist()})
-            cv2.imwrite(str(out.with_suffix(".dot.jpg")), top.frame())
+            cv2.imwrite(str(out.with_suffix(".dot.jpg")), after)
         top.close()
         side.close()
         SCRATCH.unlink(missing_ok=True)
