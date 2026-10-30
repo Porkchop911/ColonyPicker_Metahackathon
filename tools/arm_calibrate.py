@@ -267,17 +267,48 @@ def teal_ends(img: np.ndarray, on_paper: bool, min_px: int = 6) -> list[tuple[np
     return out
 
 
-def measure(top, side, det, urig, srig):
+BG_LIFT = {2: 25, 3: 45, 4: 25}  # pulses over START that take the needle out of the side camera's view (2026-10-30)
+
+
+def side_background(side) -> np.ndarray:
+    """Side frame with the needle lifted out of view (arm at START + BG_LIFT), for needle_end."""
+    from tip_descend import send
+    send({**START, **{k: START[k] + v for k, v in BG_LIFT.items()}}, ms=1500)
+    time.sleep(2.0)
+    return side.frame()
+
+
+def needle_end(frame: np.ndarray, bg: np.ndarray) -> np.ndarray | None:
+    """The needle's lowest pixel in the side view by difference against `bg`: of the changed blobs >= 1500 px not
+    touching the left edge (robot body), the one reaching lowest. SAM 3.1 returned nothing on ~half the frames at
+    START; teal colour fails there (the box behind reads teal too); this matched SAM's end to 1-10 px (2026-10-30)."""
+    blur = lambda img: cv2.GaussianBlur(img, (5, 5), 0).astype(np.int16)  # noqa: E731
+    d = cv2.morphologyEx((np.abs(blur(frame) - blur(bg)).max(axis=2) > 30).astype(np.uint8), cv2.MORPH_OPEN,
+                         np.ones((3, 3), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(d)
+    keep = [j for j in range(1, n) if st[j, 4] >= 1500 and st[j, 0] > 0]
+    if not keep:
+        return None
+    vs, us = np.nonzero(lab == max(keep, key=lambda j: st[j, 1] + st[j, 3]))
+    return np.array([us[vs == vs.max()].mean(), vs.max()], float)
+
+
+def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     """Inked tip in the sheet frame (mm, z down) from SAM's needle end in the side view and an overhead teal blob whose
     rays meet. SAM returns nothing on ~half the frames at START (2026-10-30): callers retry on fresh frames.
     Overhead: teal blobs over the paper only. Of the blobs that meet to MISS_MM the biggest wins (old ink spots ~170 px
     lined up too, the tip is ~1500 px); none -> the closest, which the caller rejects by its miss. (p3, miss), or None."""
     import tip_triangulate as tt
     sf = side.frame()
-    cv2.imwrite(str(SCRATCH), sf)
-    # second prompt as upright_touch_session; a teal-colour fallback paired box art with the tip (y 13-50 mm off)
-    found = det(str(SCRATCH), "thin metal needle", 0.15) or det(str(SCRATCH), "black stick", 0.3)
-    if found:
+    end = None if bg is None else needle_end(sf, bg)
+    found = []
+    if end is None:
+        cv2.imwrite(str(SCRATCH), sf)
+        # second prompt as upright_touch_session; a teal-colour fallback paired box art with the tip (y 13-50 mm off)
+        found = det(str(SCRATCH), "thin metal needle", 0.15) or det(str(SCRATCH), "black stick", 0.3)
+    if end is not None:
+        sides = [end]
+    elif found:
         vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
         k = int(np.argmax(vs))
         spx = np.array([us[k], vs[k]], float)
@@ -354,6 +385,7 @@ def collect() -> None:
     every ANCHOR_EVERY poses."""
     from tip_descend import read, send
     top, side, det, urig, srig = cameras()
+    bg = side_background(side)
     rows, anchor0, drifted = [], None, 0
     try:
         send(START, ms=2500)
@@ -364,7 +396,7 @@ def collect() -> None:
             time.sleep(0.8)
             send(q, ms=800)
             time.sleep(0.8 + REPEAT_DWELL)
-            got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)
+            got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
             if got is None:
                 raise RuntimeError("tip not found: ink the tip, check the lamps")
             return float(-got[0][2])
@@ -385,7 +417,7 @@ def collect() -> None:
                 time.sleep(1.0)
                 send(START, ms=800)
                 time.sleep(0.8 + REPEAT_DWELL)
-                got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)
+                got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
                 if got is not None and got[1] <= MISS_MM:
                     anchor0 = got[0] if anchor0 is None else anchor0
                     off = float(np.linalg.norm(got[0] - anchor0))
@@ -406,7 +438,7 @@ def collect() -> None:
             send(q, ms=800)
             time.sleep(0.8 + REPEAT_DWELL)
             now = read()
-            got = next((g for g in (measure(top, side, det, urig, srig) for _ in range(5)) if g is not None), None)
+            got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
             if got is None:
                 continue
             p3, miss = got
@@ -461,12 +493,13 @@ def repeat() -> None:
     from tip_descend import read, send
     out = Path(f"evidence/tip/arm_repeat_{time.strftime('%Y%m%dT%H%M%S')}.json")
     top, side, det, urig, srig = cameras()
+    bg = side_background(side)
     rows = []
     try:
         send(START, ms=2500)
         time.sleep(2.0)
         for i in range(STATIC_N):
-            got = measure(top, side, det, urig, srig)
+            got = measure(top, side, det, urig, srig, bg)
             if got is not None:
                 rows.append({"static": True, "tip_mm": got[0].tolist(), "miss_mm": got[1], "t": time.time()})
         heights = [-r["tip_mm"][2] for r in rows]
@@ -488,7 +521,7 @@ def repeat() -> None:
             send(START, ms=800)
             time.sleep(0.8 + dwell)
             now = read()
-            got = measure(top, side, det, urig, srig)
+            got = measure(top, side, det, urig, srig, bg)
             if got is None:
                 continue
             p3, miss = got
