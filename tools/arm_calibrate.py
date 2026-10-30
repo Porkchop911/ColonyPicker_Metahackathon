@@ -287,7 +287,11 @@ def paper_hull(img: np.ndarray) -> np.ndarray:
 def teal_ends(img: np.ndarray, on_paper: bool, min_px: int = 6) -> list[tuple[np.ndarray, int]]:
     """(lowest pixel, area) of each teal blob, over the paper (`on_paper`) or off it."""
     paper = paper_hull(img)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(cv2.cvtColor(img, cv2.COLOR_BGR2HSV), *TEAL))
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # under the warm colony lamp the ink reads hue 22-30 against the paper's 15 (2026-10-30): floor relative to the paper
+    lo = (min(TEAL[0][0], int(np.median(hsv[..., 0][gray > np.percentile(gray, 70)])) + 8), *TEAL[0][1:])
+    n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.inRange(hsv, lo, TEAL[1]))
     out = []
     for j in range(1, n):
         if st[j, 4] < min_px:
