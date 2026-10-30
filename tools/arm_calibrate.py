@@ -899,6 +899,7 @@ def anchor(models: dict, top, side, det, urig, srig, bg) -> None:
 HOVER_STEPS_MM = (40.0, 25.0, 15.0, 10.0)  # 60 mm put the tip over the robot body in the overhead (ink not found)
 HOVER_TRIES = 3   # corrections per height
 HOVER_XY_MM, HOVER_Z_MM = 0.5, 1.0  # good enough to go lower
+MEMORY = Path("evidence/tip/hover_memory.json")  # goal -> {height mm: correction mm} from the last hover/dot
 HOVER_GOAL = (-5.0, 45.0)  # open-paper crossing nearest in joint motion (58 pulses from START), seen by both cameras
 
 
@@ -970,6 +971,14 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
     rows = []
     out = Path(f"evidence/tip/arm_hover_{time.strftime('%Y%m%dT%H%M%S')}.json")
     q = dict(START)
+    t0 = time.time()
+    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}"
+    memory = json.loads(MEMORY.read_text()) if MEMORY.exists() else {}
+    known = {float(h): np.array(c) for h, c in memory.get(key, {}).items() if not h.startswith("q")}  # corr per height
+    poses = {float(h[1:]): {int(j): v for j, v in c.items()} for h, c in memory.get(key, {}).items() if h.startswith("q")}
+    # with a last run to start from, the first try per height lands close: skip 40 / 25 mm and the odd touch steps (wet
+    # ink lasts minutes; the full descent took ~6 min to the paper, 2026-10-30)
+    steps, touch_steps = ((15.0, 10.0), (6.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0)) if known else (HOVER_STEPS_MM, TOUCH_STEPS_MM)
     try:
         anchor(models, top, side, det, urig, srig, bg)
         printed, hom, cross = local_crossing(grid_frame, urig, goal_xy)
@@ -977,8 +986,12 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
               f"({np.linalg.norm(printed - np.asarray(goal_xy)):.2f} mm off the lattice's)", flush=True)
         goal_xy = tuple(printed)
         corr = np.zeros(3)
-        for h in HOVER_STEPS_MM:
+        for h in steps:
+            corr = known.get(h, corr).copy()
             goal = np.array([goal_xy[0], goal_xy[1], -h])
+            # start the solver from last run's pose at this height: from START it took another elbow/wrist branch
+            # (elbow 132 vs 114) where the remembered correction did not hold (2026-10-30)
+            q = dict(poses.get(h, q))
             for attempt in range(HOVER_TRIES):
                 q, resid = aim_solve(models["calibrated"], goal + corr, q)
                 if resid > 1.0:
@@ -1001,10 +1014,12 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                 if np.linalg.norm(err[:2]) <= HOVER_XY_MM and abs(err[2]) <= HOVER_Z_MM:
                     break
                 corr -= err
+            known[h] = corr.copy()
+            poses[h] = dict(q)
         cv2.imwrite(str(out.with_suffix(".top.jpg")), top.frame())
         cv2.imwrite(str(out.with_suffix(".side.jpg")), side.frame())
-        print(f"holding over {goal_xy} at 10 mm for the photos", flush=True)
-        time.sleep(2.0)
+        print(f"holding over {goal_xy} at 10 mm for the photos ({time.time() - t0:.0f} s from the start)", flush=True)
+        time.sleep(0.5)
         last = None
 
         def place(qq: dict, blind_ok: bool = False):
@@ -1021,11 +1036,13 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
 
         blind = 0
 
-        for h in TOUCH_STEPS_MM if touch else ():
+        for h in touch_steps if touch else ():
             # z stays as commanded from the 10 mm correction; xy keeps being corrected; contact = the tip stops sinking.
             # One pan pulse is ~0.8 mm sideways out here and the error jumped 0.8 <-> 1.8 mm from try to try
             # (2026-10-30): up to HOVER_TRIES per height, the best one kept
             goal = np.array([goal_xy[0], goal_xy[1], -h])
+            if h in known:
+                corr[:2] = known[h][:2]
             tries = []
             for attempt in range(HOVER_TRIES):
                 q, resid = aim_solve(models["calibrated"], goal + corr, q)
@@ -1063,8 +1080,10 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
                 raise RuntimeError(f"{tries[-1][0]:.1f} mm off the crossing at {h:.0f} mm: not dotting")
             height = float(-tries[-1][2][0][2])
             # a stall alone fooled it at 1.9 mm (servo deadband on a 1 mm step, no dot): a stall counts only near the paper
+            known[h] = corr.copy()
+            poses[h] = dict(q)
             if h <= 2.0 and (height <= 0.3 or (last is not None and last - height < CONTACT_MM and height <= 1.0)):
-                print(f"contact: the tip stopped at {height:.1f} mm (dot)", flush=True)
+                print(f"contact: the tip stopped at {height:.1f} mm (dot), {time.time() - t0:.0f} s from the start", flush=True)
                 cv2.imwrite(str(out.with_suffix(".touch.top.jpg")), top.frame())
                 cv2.imwrite(str(out.with_suffix(".touch.side.jpg")), side.frame())
                 time.sleep(1.0)
@@ -1098,6 +1117,11 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
         side.close()
         SCRATCH.unlink(missing_ok=True)
         out.write_text(json.dumps(rows, indent=1))
+        if known:
+            MEMORY.write_text(json.dumps({**memory, key: {**{str(h): c.tolist() for h, c in known.items()},
+                                                          **{f"q{h}": {str(j): v for j, v in qq.items()}
+                                                             for h, qq in poses.items()}}}, indent=1))
+        measure.top_bg = None
         print(f"saved {out}", flush=True)
 
 
