@@ -408,7 +408,7 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     cands = [(*tt.meet(tt.ray(tpx, *urig), tt.ray(spx, *srig)), area + s_area, tpx, spx) for spx, s_area in sides
              for tpx, area in tops]
     if measure.expect is not None:  # where the arm was sent: junk pairs (an old dot, the plate) met to < 5 mm 98 mm away
-        cands = [c for c in cands if np.linalg.norm(c[0] - measure.expect) <= EXPECT_MM]
+        cands = [c for c in cands if np.linalg.norm(c[0] - measure.expect) <= measure.expect_mm]
         if not cands:
             return None
     fit = [c for c in cands if c[1] <= MISS_MM]
@@ -418,7 +418,8 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
 
 
 measure.top_bg = None  # an overhead frame with the needle elsewhere: enables the difference end (set by hover)
-measure.expect = None  # sheet mm the tip was sent to: candidates farther than EXPECT_MM are dropped (set by hover)
+measure.expect = None  # sheet mm the tip was sent to: candidates farther than expect_mm are dropped (set by hover)
+measure.expect_mm = 8.0
 EXPECT_MM = 8.0  # first tries landed up to ~5.5 mm off (2026-10-30)
 
 
@@ -906,7 +907,8 @@ HOVER_STEPS_MM = (40.0, 25.0, 15.0, 10.0)  # 60 mm put the tip over the robot bo
 HOVER_TRIES = 3   # corrections per height
 HOVER_XY_MM, HOVER_Z_MM = 0.5, 1.0  # good enough to go lower
 MEMORY = Path("evidence/tip/hover_memory.json")  # goal -> {height mm: correction mm} from the last hover/dot
-HOVER_GOAL = (-5.0, 45.0)  # open-paper crossing nearest in joint motion (58 pulses from START), seen by both cameras
+HOVER_GOAL = (-5.0, 45.0)
+HOVER_GOAL_ROLL = (-3.2, 40.9)  # fit-tip poses centre over the printed crossing near (-5, 40)  # open-paper crossing nearest in joint motion (58 pulses from START), seen by both cameras
 
 
 TOUCH_STEPS_MM = (8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0)  # below 10 mm: one try each, xy corrected
@@ -1000,7 +1002,7 @@ def session_with_tip(roll: int) -> np.ndarray:
     return p
 
 
-def fit_tip(roll: int, n: int = 8) -> np.ndarray:
+def fit_tip(roll: int, n: int = 8, goal_xy=None, height: float = 60.0) -> np.ndarray:
     """Tip offset (camera frame) for `roll` from n measured poses at a safe height: the arm raises, turns the roll,
     then visits RAISED + upward pulse deltas; the first measurement inverted through the model seeds the tip, Gauss-
     Newton on all refines it (arm terms, yaw and base held). Also the user's check: inferred (model at the read-back
@@ -1022,22 +1024,34 @@ def fit_tip(roll: int, n: int = 8) -> np.ndarray:
         time.sleep(1.6)
         send({**raised, 5: roll}, ms=2000)
         time.sleep(2.5)
+        centre = {**raised, 5: roll}
+        if goal_xy is not None and str(roll) in model.get("tip_by_roll", {}):
+            # around the work: up high near the robot the overhead saw the vertical tip in 3 of 8 poses (2026-10-31)
+            pr = np.r_[p[:6], model["tip_by_roll"][str(roll)], p[9:]]
+            centre, _ = aim_solve(pr, np.array([goal_xy[0], goal_xy[1], -height]), centre)
+            centre = {**centre, 5: roll}
+            print(f"poses around {centre} ({height:.0f} mm over {goal_xy} by the current tip)", flush=True)
         for i in range(n):
-            dq = {1: int(rng.integers(-20, 21)), 2: int(rng.integers(0, 21)), 3: int(rng.integers(0, 21)),
-                  4: int(rng.integers(-15, 16))} if i else {1: 0, 2: 0, 3: 0, 4: 0}
-            q = {**raised, 5: roll, **{k: raised[k] + v for k, v in dq.items()}}
+            dq = {1: int(rng.integers(-12, 13)), 2: int(rng.integers(0, 16)), 3: int(rng.integers(0, 16)),
+                  4: int(rng.integers(-10, 11))} if i else {1: 0, 2: 0, 3: 0, 4: 0}
+            q = {**centre, **{k: centre[k] + v for k, v in dq.items()}}
             send({**q, **{k: q[k] - ca.APPROACH * REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
             time.sleep(1.0)
             send(q, ms=800)
             time.sleep(0.8 + REPEAT_DWELL)
+            if str(roll) in model.get("tip_by_roll", {}):  # near the current estimate (a junk pair 140 mm up wrecked a fit)
+                measure.expect = arm_model(np.r_[p[:6], model["tip_by_roll"][str(roll)], p[9:]], [q], [up])[0]
+                measure.expect_mm = 20.0
             got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
-            if got is None or got[1] > MISS_MM:
-                print(f"pose {i}: tip not measured", flush=True)
+            if got is None or got[1] > 1.5:
+                print(f"pose {i}: tip not measured" + ("" if got is None else f" (rays {got[1]:.1f} mm apart)"), flush=True)
                 continue
             r = read()
             qs.append({k: r[k] for k in (1, 2, 3, 4, 5)})
             seen.append(got[0])
             print(f"pose {i}: tip {np.round(got[0], 1).tolist()} ({-got[0][2]:.0f} mm up, miss {got[1]:.1f})", flush=True)
+        Path(f"evidence/tip/fit_tip_{roll}_{time.strftime('%Y%m%dT%H%M%S')}.json").write_text(json.dumps(
+            [{"read": {str(k): v for k, v in qq.items()}, "tip_mm": t.tolist()} for qq, t in zip(qs, seen)], indent=1))
         if len(seen) < 4:
             raise RuntimeError(f"only {len(seen)} poses measured")
         seen = np.array(seen)
@@ -1057,6 +1071,18 @@ def fit_tip(roll: int, n: int = 8) -> np.ndarray:
             if np.linalg.norm(step) < 1e-3:
                 break
         res = np.linalg.norm(arm_model(np.r_[p[:6], tip, p[9:]], qs, signs) - seen, axis=1)
+        while res.max() > 3.0 and len(qs) > 4:  # drop the worst pose and refit
+            keep = np.arange(len(qs)) != int(np.argmax(res))
+            qs, seen, signs = [qq for qq, k in zip(qs, keep) if k], seen[keep], [sg for sg, k in zip(signs, keep) if k]
+            for _ in range(30):
+                e = (arm_model(np.r_[p[:6], tip, p[9:]], qs, signs) - seen).ravel()
+                jac = np.column_stack([((arm_model(np.r_[p[:6], tip + 0.1 * np.eye(3)[j], p[9:]], qs, signs) - seen)
+                                        .ravel() - e) / 0.1 for j in range(3)])
+                step = np.linalg.lstsq(jac, -e, rcond=None)[0]
+                tip = tip + step
+                if np.linalg.norm(step) < 1e-3:
+                    break
+            res = np.linalg.norm(arm_model(np.r_[p[:6], tip, p[9:]], qs, signs) - seen, axis=1)
         print(f"roll {roll}: tip {np.round(tip, 1).tolist()} (camera frame); inferred vs measured per pose "
               f"{np.round(res, 1).tolist()} mm, median {np.median(res):.2f}", flush=True)
         model.setdefault("tip_by_roll", {})[str(roll)] = tip.tolist()
@@ -1070,7 +1096,8 @@ def fit_tip(roll: int, n: int = 8) -> np.ndarray:
         time.sleep(2.5)
         top.close()
         side.close()
-        measure.top_bg = None
+        measure.top_bg = measure.expect = None
+        measure.expect_mm = 8.0
 
 
 def hover(goal_xy=HOVER_GOAL, touch: bool = False, roll: int | None = None) -> None:
@@ -1377,7 +1404,7 @@ def main() -> None:
     args = ap.parse_args()
     {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data[0]), "repeat": repeat,
      "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim, "hover": lambda: hover(roll=args.roll), "dot": lambda: hover(touch=True, roll=args.roll),
-     "fit-tip": lambda: fit_tip(args.roll),
+     "fit-tip": lambda: fit_tip(args.roll, goal_xy=HOVER_GOAL_ROLL),
      "repeat-report": lambda: repeat_report(args.data[0])}[args.cmd]()
 
 

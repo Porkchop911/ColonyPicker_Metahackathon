@@ -56,5 +56,12 @@
  "tie_poses": 9,
  "tie_runs": [
   "evidence\\tip\\arm_calibration_data_20261030T211239.json"
- ]
+ ],
+ "tip_by_roll": {
+  "1000": [
+   50.09265626485754,
+   73.39194644476699,
+   176.17044424607374
+  ]
+ }
 }
