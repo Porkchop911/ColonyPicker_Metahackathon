@@ -288,6 +288,28 @@ def approach_plan(qs: list[dict], seed: int = 1) -> list[tuple[dict, dict, dict]
     return out
 
 
+def low_plan(n: int, rise, height: float, seed: int = 0) -> list[tuple[dict, dict, dict]]:
+    """approach_plan for n poses between SAFE_MM (1.5x model margin, pre-move included) and START height, nearest-next
+    order. `rise(q)`: the model's tip rise from START (mm), `height`: START's measured tip height. The side camera's
+    frame ends just above START (tip ~85 mm up): poses() lifted the tip out of it, 55 of 63 unmeasured (2026-10-30).
+    Wide joint ranges, kept by the height band; the band also sits nearer the 10 mm hover where the model is used."""
+    rng = np.random.default_rng(seed)
+    safe = lambda q: height + 1.5 * min(rise(q), 0.0) >= SAFE_MM  # noqa: E731
+    out = [dict(START)]
+    for _ in range(100 * n):
+        if len(out) >= n:
+            break
+        q = {**START, 1: START[1] + int(rng.integers(-35, 36)), 2: START[2] + int(rng.integers(-60, 21)),
+             3: START[3] + int(rng.integers(-100, 21)), 4: START[4] + int(rng.integers(-60, 61))}
+        if rise(q) <= 3.0 and safe(q):
+            out.append(q)
+    order, left = [out[0]], out[1:]
+    while left:
+        j = int(np.argmin([sum(abs(order[-1][k] - q[k]) for k in (1, 2, 3, 4)) for q in left]))
+        order.append(left.pop(j))
+    return [(pre, q, s) for pre, q, s in approach_plan(order, seed + 1) if safe(pre)]
+
+
 def collect() -> None:
     """Drive COLLECT_N poses, each reached from a random side per joint, triangulate the inked tip at each (overhead
     teal tip + side SAM tip); command, read-back, previous position, approach and dwell logged; START re-measured
@@ -304,7 +326,7 @@ def collect() -> None:
         height = float(-got[0][2])
         z0 = ca.tip_in_base(START, TIP_GUESS)[2]
         low = lambda q: height + 1.5 * min(ca.tip_in_base(q, TIP_GUESS)[2] - z0, 0.0) < SAFE_MM  # noqa: E731
-        plan = approach_plan(poses(COLLECT_N))
+        plan = low_plan(COLLECT_N, lambda q: ca.tip_in_base(q, TIP_GUESS)[2] - z0, height)
         print(f"START tip {height:.1f} mm up; {len(plan)} poses", flush=True)
         for i, (pre, q, sign) in enumerate(plan):
             if i % ANCHOR_EVERY == 0:
