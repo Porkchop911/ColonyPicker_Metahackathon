@@ -949,7 +949,8 @@ def local_crossing(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarr
     obj, _ = prig.snap(prig.undistort(pts, k, d), k, r, t)
     tgt = cv2.projectPoints(np.array([[goal_xy[0], goal_xy[1], 0.0]]), r, t, k, d)[0][0, 0]
     near = np.linalg.norm(pts - tgt, axis=1) < 150.0
-    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}"
+    roll = START[5] if roll is None else roll
+    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}" + ("" if roll == START[5] else f"@{roll}")  # each roll its own memory
     cache = json.loads(PRINTED.read_text()) if PRINTED.exists() else {}
     if near.sum() < 12:
         # the far corner's ruling is lost under some lamp settings (0-2 crossings, 2026-10-30); the printed crossing
@@ -982,7 +983,97 @@ def new_mark(before: np.ndarray | None, after: np.ndarray, urig, goal_xy) -> tup
     return min(near, key=lambda sp: np.linalg.norm(sp[1] - np.asarray(goal_xy))) if near else None
 
 
-def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
+RAISED = {2: 25, 3: 25}  # pulses over START (~55 mm higher) where the roll may turn: at roll 1000 the needle hangs
+# near-vertical and its tip dropped to just above the far dish from START + 10 (2026-10-31)
+
+
+def session_with_tip(roll: int) -> np.ndarray:
+    """The session model with the tip fitted for `roll`: the model carries the tip with the camera, which sits before
+    the roll joint, so each roll needs its own tip (fit-tip)."""
+    model = json.loads(ARM_MODEL.read_text())
+    p = np.array(model["session"])
+    if roll != START[5]:
+        tips = model.get("tip_by_roll", {})
+        if str(roll) not in tips:
+            raise RuntimeError(f"no tip fitted for roll {roll}: run fit-tip --roll {roll}")
+        p[6:9] = tips[str(roll)]
+    return p
+
+
+def fit_tip(roll: int, n: int = 8) -> np.ndarray:
+    """Tip offset (camera frame) for `roll` from n measured poses at a safe height: the arm raises, turns the roll,
+    then visits RAISED + upward pulse deltas; the first measurement inverted through the model seeds the tip, Gauss-
+    Newton on all refines it (arm terms, yaw and base held). Also the user's check: inferred (model at the read-back
+    pulses) vs measured, per pose. Saves arm_model.json tip_by_roll[roll]."""
+    from tip_descend import read, send
+    model = json.loads(ARM_MODEL.read_text())
+    p = np.array(model["session"])
+    top, side, det, urig, srig = cameras()
+    auto_lamps(top, side, det, urig, srig)
+    bg = side_background(side)
+    measure.top_bg = top.frame()
+    up = {k: ca.APPROACH for k in (1, 2, 3, 4)}
+    raised = {**START, **{k: START[k] + v for k, v in RAISED.items()}}
+    rng = np.random.default_rng(int(time.time()) % 100000)
+    seen, qs = [], []
+    try:
+        anchor({"calibrated": p}, top, side, det, urig, srig, bg)  # at roll 502: the base for this session
+        send({**raised, 5: START[5]}, ms=1500)
+        time.sleep(1.6)
+        send({**raised, 5: roll}, ms=2000)
+        time.sleep(2.5)
+        for i in range(n):
+            dq = {1: int(rng.integers(-20, 21)), 2: int(rng.integers(0, 21)), 3: int(rng.integers(0, 21)),
+                  4: int(rng.integers(-15, 16))} if i else {1: 0, 2: 0, 3: 0, 4: 0}
+            q = {**raised, 5: roll, **{k: raised[k] + v for k, v in dq.items()}}
+            send({**q, **{k: q[k] - ca.APPROACH * REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
+            time.sleep(1.0)
+            send(q, ms=800)
+            time.sleep(0.8 + REPEAT_DWELL)
+            got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
+            if got is None or got[1] > MISS_MM:
+                print(f"pose {i}: tip not measured", flush=True)
+                continue
+            r = read()
+            qs.append({k: r[k] for k in (1, 2, 3, 4, 5)})
+            seen.append(got[0])
+            print(f"pose {i}: tip {np.round(got[0], 1).tolist()} ({-got[0][2]:.0f} mm up, miss {got[1]:.1f})", flush=True)
+        if len(seen) < 4:
+            raise RuntimeError(f"only {len(seen)} poses measured")
+        seen = np.array(seen)
+        signs = [up] * len(qs)
+        c, s_ = np.cos(p[9]), np.sin(p[9])
+        rot = np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]]) @ np.diag([1.0, -1.0, -1.0])
+        terms = {"d2": p[0], "d3": p[1], "b": {str(k): p[1 + k] for k in (1, 2, 3, 4)}}
+        r_cam, o_cam = ca.camera_in_base(ca.arm_pulses(qs[0], terms, up))
+        tip = r_cam.T @ (rot.T @ (seen[0] - p[10:13]) - o_cam)  # seed: invert the first pose
+        for _ in range(30):
+            pp = np.r_[p[:6], tip, p[9:]]
+            e = (arm_model(pp, qs, signs) - seen).ravel()
+            jac = np.column_stack([((arm_model(np.r_[p[:6], tip + 0.1 * np.eye(3)[j], p[9:]], qs, signs) - seen).ravel()
+                                    - e) / 0.1 for j in range(3)])
+            step = np.linalg.lstsq(jac, -e, rcond=None)[0]
+            tip = tip + step
+            if np.linalg.norm(step) < 1e-3:
+                break
+        res = np.linalg.norm(arm_model(np.r_[p[:6], tip, p[9:]], qs, signs) - seen, axis=1)
+        print(f"roll {roll}: tip {np.round(tip, 1).tolist()} (camera frame); inferred vs measured per pose "
+              f"{np.round(res, 1).tolist()} mm, median {np.median(res):.2f}", flush=True)
+        model.setdefault("tip_by_roll", {})[str(roll)] = tip.tolist()
+        ARM_MODEL.write_text(json.dumps(model, indent=1))
+        return tip
+    finally:
+        q = read()
+        send({**{k: q[k] for k in (1, 2, 3, 4)}, 2: q[2] + 30, 3: q[3] + 30, 5: q[5]}, ms=1500)  # up first
+        time.sleep(1.8)
+        send({**raised, 5: START[5]}, ms=2000)  # roll back only up high
+        time.sleep(2.5)
+        top.close()
+        side.close()
+        measure.top_bg = None
+
+
+def hover(goal_xy=HOVER_GOAL, touch: bool = False, roll: int | None = None) -> None:
     """Measured placing down to 10 mm over a grid crossing: at each of HOVER_STEPS_MM, solve the calibrated model for
     the goal shifted by the accumulated correction, approach from 20 pulses above, measure, correct, until within
     HOVER_XY_MM / HOVER_Z_MM, then go lower. Lifts and stops on a lost tip or a tip below the step it is on (no
@@ -997,7 +1088,8 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
     out = Path(f"evidence/tip/arm_hover_{time.strftime('%Y%m%dT%H%M%S')}.json")
     q = dict(START)
     t0 = time.time()
-    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}"
+    roll = START[5] if roll is None else roll
+    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}" + ("" if roll == START[5] else f"@{roll}")  # each roll its own memory
     memory = json.loads(MEMORY.read_text()) if MEMORY.exists() else {}
     known = {float(h): np.array(c) for h, c in memory.get(key, {}).items() if not h.startswith("q")}  # corr per height
     poses = {float(h[1:]): {int(j): v for j, v in c.items()} for h, c in memory.get(key, {}).items() if h.startswith("q")}
@@ -1006,11 +1098,22 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
     steps, touch_steps = ((15.0, 10.0), (6.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -3.0)) if known else (HOVER_STEPS_MM, TOUCH_STEPS_MM)
     try:
         anchor(models, top, side, det, urig, srig, bg)
+        if roll != START[5]:  # the roll's own tip, the anchored base; turn only up high (the vertical tip hangs low)
+            p_roll = session_with_tip(roll)
+            p_roll[9:] = models["calibrated"][9:]
+            models["calibrated"] = p_roll
+            raised = {**START, **{k: START[k] + v for k, v in RAISED.items()}}
+            send(raised, ms=1500)
+            time.sleep(1.6)
+            send({**raised, 5: roll}, ms=2000)
+            time.sleep(2.5)
+            q = {**raised, 5: roll}
         printed, hom, cross = local_crossing(grid_frame, urig, goal_xy)
         print(f"printed crossing nearest {goal_xy}: {np.round(printed, 2).tolist()} mm "
               f"({np.linalg.norm(printed - np.asarray(goal_xy)):.2f} mm off the lattice's)", flush=True)
         goal_xy = tuple(printed)
-        offsets = json.loads(DOT_OFFSETS.read_text()) if DOT_OFFSETS.exists() else []
+        offsets_file = DOT_OFFSETS if roll == START[5] else DOT_OFFSETS.with_name(f"dot_offsets_{roll}.json")  # per roll
+        offsets = json.loads(offsets_file.read_text()) if offsets_file.exists() else []
         if touch and offsets:  # aim off by the mean mark-minus-crossing offset of earlier dots (the pressed needle skids)
             shift = np.mean(offsets, axis=0)
             goal_xy = tuple(np.asarray(printed) - shift)
@@ -1160,7 +1263,7 @@ def hover(goal_xy=HOVER_GOAL, touch: bool = False) -> None:
             dot = new_mark(measure.top_bg, after, urig, goal_xy) or ink_dot(after, urig, goal_xy)  # old marks: in both
             if dot is not None and touch:
                 mark_off = (dot[1] - np.asarray(printed)).tolist()  # what the next aim subtracts
-                DOT_OFFSETS.write_text(json.dumps(offsets + [mark_off]))
+                offsets_file.write_text(json.dumps(offsets + [mark_off]))
                 print(f"mark at {np.round(mark_off, 2).tolist()} mm from the printed crossing (camera model): "
                       f"{np.linalg.norm(mark_off):.2f} mm", flush=True)
             if dot is not None and hom is None:  # scoring needs the local grid: try the frame after the lift
@@ -1267,11 +1370,14 @@ def aim(n: int = 10) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "fit-tie", "aim", "hover", "dot", "selftest", "repeat", "repeat-report"))
+    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "fit-tie", "fit-tip", "aim", "hover", "dot", "selftest", "repeat",
+                                       "repeat-report"))
+    ap.add_argument("--roll", type=int, default=START[5], help="fit-tip / hover / dot: gripper roll (1000: needle near-vertical)")
     ap.add_argument("data", nargs="*", type=Path, default=[DATA])
     args = ap.parse_args()
     {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data[0]), "repeat": repeat,
-     "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim, "hover": hover, "dot": lambda: hover(touch=True),
+     "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim, "hover": lambda: hover(roll=args.roll), "dot": lambda: hover(touch=True, roll=args.roll),
+     "fit-tip": lambda: fit_tip(args.roll),
      "repeat-report": lambda: repeat_report(args.data[0])}[args.cmd]()
 
 
