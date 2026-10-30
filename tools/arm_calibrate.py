@@ -342,8 +342,11 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
         cv2.imwrite(str(SCRATCH), sf)
         # second prompt as upright_touch_session; a teal-colour fallback paired box art with the tip (y 13-50 mm off)
         found = det(str(SCRATCH), "thin metal needle", 0.15) or det(str(SCRATCH), "black stick", 0.3)
-    if end is not None:
-        sides = [end]
+    # the ink bulb itself, where it reads teal (relative to the paper): in the plate_rig layout the lifted needle stays in
+    # the side view and the background difference picked a blob by a dish (2026-10-30); rays must still meet below
+    inked = [(px, a) for px, a in teal_ends(sf, on_paper=False) + teal_ends(sf, on_paper=True) if a >= 30]
+    if end is not None or inked:
+        sides = [(end, 0)] * (end is not None) + inked
     elif found:
         vs, us = np.nonzero(max(found, key=lambda d: d["score"])["mask"])
         k = int(np.argmax(vs))
@@ -358,7 +361,7 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
         if near:
             ty, tx = np.nonzero(lab == max(near, key=lambda j: st[j, 4]))
             spx = np.array([tx[ty == ty.max()].mean() + wx, ty.max() + wy], float)
-        sides = [spx]
+        sides = [(spx, 0)]
     else:
         print("tip not found: no needle in the side view", flush=True)
         return None
@@ -368,7 +371,8 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
     if not tops:
         print("tip not found: no teal in the overhead view", flush=True)
         return None
-    cands = [(*tt.meet(tt.ray(tpx, *urig), tt.ray(spx, *srig)), area, tpx, spx) for spx in sides for tpx, area in tops]
+    cands = [(*tt.meet(tt.ray(tpx, *urig), tt.ray(spx, *srig)), area + s_area, tpx, spx) for spx, s_area in sides
+             for tpx, area in tops]
     fit = [c for c in cands if c[1] <= MISS_MM]
     p3, miss, _, tpx, spx = max(fit, key=lambda c: c[2]) if fit else min(cands, key=lambda c: c[1])
     measure.px = (tpx.tolist(), spx.tolist())  # the pixels behind the last result, for a fit in image space
@@ -687,11 +691,12 @@ def arm_model(p: np.ndarray, qs: list[dict], signs: list[dict]) -> np.ndarray:
                      for q, sg in zip(qs, signs)])
 
 
-def fit_arm(paths: list[Path], key: str = "cmd", out_path: Path = ARM_MODEL) -> dict:
+def fit_arm(paths: list[Path], key: str = "cmd", out_path: Path = ARM_MODEL, tie_only: bool = False) -> dict:
     """Fit arm_model to collected runs and write the arm's own terms to ARM_MODEL. Live 2026-10-30 (run 11, 78 poses,
     5-fold blocks held out): commanded pulses + approach terms 1.8 mm median / 4.0 mm p90; without approach terms no
     model got under ~9 mm. The tip, base and grid frame are per run and only recorded. Several starts (geometry
-    first), then the worst 10 % dropped and refit."""
+    first), then the worst 10 % dropped and refit. `tie_only`: keep ARM_MODEL's arm terms, refit only this session's
+    tie (tip, yaw, base), e.g. after the cameras or the robot moved."""
     rows = [r for path in paths for r in json.loads(path.read_text()) if "approach" in r and "cmd" in r]
     qs = [{int(k): v for k, v in r[key].items()} for r in rows]
     signs = [{int(k): v for k, v in r["approach"].items()} for r in rows]
@@ -719,17 +724,21 @@ def fit_arm(paths: list[Path], key: str = "cmd", out_path: Path = ARM_MODEL) -> 
 
     idx = np.arange(len(rows))
     geometry = np.r_[np.zeros(6, bool), np.ones(7, bool)]
+    saved = json.loads(out_path.read_text()) if tie_only else None
+    arm0 = np.r_[saved["d2"], saved["d3"], [saved["b"][str(k)] for k in (1, 2, 3, 4)]] if tie_only else np.zeros(6)
     best = None
     for t0 in ([0, 25, 200], [70, -10, 175], [0, 60, 250], [-40, 0, 150], [40, 40, 180]):
         for yaw in np.linspace(-np.pi, np.pi, 12, endpoint=False):
-            p0 = np.r_[np.zeros(6), t0, yaw, 0.0, 0.0, 0.0]
+            p0 = np.r_[arm0, t0, yaw, 0.0, 0.0, 0.0]
             p0[10:] = (seen - arm_model(p0, qs, signs)).mean(0)
             p, r = lm(p0, idx, 40, geometry)
             best = (np.median(r), p) if best is None or np.median(r) < best[0] else best
-    nominal, rn = lm(best[1], idx, 300, geometry)  # the nominal URDF tied to the sheet by the same data: A/B baseline
+    nominal0 = np.r_[np.zeros(6), best[1][6:]]
+    nominal, rn = lm(nominal0, idx, 300, geometry)  # the nominal URDF tied to the sheet by the same data: A/B baseline
     nominal, _ = lm(nominal, idx[rn <= np.percentile(rn, 90)], 300, geometry)
-    p, r = lm(best[1], idx, 300, np.ones(13, bool))
-    p, _ = lm(p, idx[r <= np.percentile(r, 90)], 300, np.ones(13, bool))
+    free = geometry if tie_only else np.ones(13, bool)
+    p, r = lm(best[1], idx, 300, free)
+    p, _ = lm(p, idx[r <= np.percentile(r, 90)], 300, free)
     r = np.linalg.norm(arm_model(p, qs, signs) - seen, axis=1)
     rn = np.linalg.norm(arm_model(nominal, qs, signs) - seen, axis=1)
     out = {"d2": float(p[0]), "d3": float(p[1]), "b": {str(k): float(p[1 + k]) for k in (1, 2, 3, 4)},
@@ -738,6 +747,10 @@ def fit_arm(paths: list[Path], key: str = "cmd", out_path: Path = ARM_MODEL) -> 
            # this session's tie to the cached side pose's sheet frame (tip, yaw, base): `aim` uses it, --calib does not
            "session": p.tolist(), "nominal_session": nominal.tolist(), "nominal_median_mm": float(np.median(rn)),
            "runs": [str(x) for x in paths]}
+    if tie_only:  # the arm terms and their provenance stay; only the session tie is new
+        out = {**saved, "session": out["session"], "nominal_session": out["nominal_session"],
+               "tie_median_mm": out["median_mm"], "tie_p90_mm": out["p90_mm"], "tie_poses": len(rows),
+               "nominal_median_mm": out["nominal_median_mm"], "tie_runs": out["runs"], "tip_cam_mm": out["tip_cam_mm"]}
     out_path.write_text(json.dumps(out, indent=1))
     print(f"arm model ({key}, {len(rows)} poses): d2 {p[0]:+.1f} d3 {p[1]:+.1f} pulses, b {np.round(p[2:6], 1).tolist()}; "
           f"tip {np.median(r):.2f} mm median, {np.percentile(r, 90):.2f} p90 (in sample; nominal {np.median(rn):.2f}) "
@@ -828,11 +841,11 @@ def aim(n: int = 10) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "aim", "selftest", "repeat", "repeat-report"))
+    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "fit-tie", "aim", "selftest", "repeat", "repeat-report"))
     ap.add_argument("data", nargs="*", type=Path, default=[DATA])
     args = ap.parse_args()
     {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data[0]), "repeat": repeat,
-     "fit-arm": lambda: fit_arm(args.data), "aim": aim,
+     "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim,
      "repeat-report": lambda: repeat_report(args.data[0])}[args.cmd]()
 
 
