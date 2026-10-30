@@ -471,7 +471,7 @@ def collect() -> None:
                              "prev": {str(j): int(prev[j]) for j in (1, 2, 3, 4, 5)},
                              "approach": {str(k): v for k, v in sign.items()}, "dwell_s": REPEAT_DWELL,
                              "tip_mm": p3.tolist(), "miss_mm": miss, "t": time.time()})
-            if -p3[2] < MIN_HEIGHT_MM:
+            if miss <= MISS_MM and -p3[2] < MIN_HEIGHT_MM:  # a bad pair (41 mm miss) read 1.7 mm and ended run 9
                 print(f"tip {-p3[2]:.1f} mm up: ending the sweep", flush=True)
                 break
     finally:
@@ -551,7 +551,7 @@ def repeat() -> None:
             rows.append({"joint": j, "side": s, "dwell_s": dwell, "cmd": {str(k): v for k, v in START.items()},
                          "read": {str(k): int(now[k]) for k in START}, "prev": {str(k): int(prev[k]) for k in START},
                          "tip_mm": p3.tolist(), "miss_mm": miss, "t": time.time()})
-            if -p3[2] < MIN_HEIGHT_MM:
+            if miss <= MISS_MM and -p3[2] < MIN_HEIGHT_MM:
                 print(f"tip {-p3[2]:.1f} mm up: stopping", flush=True)
                 break
     finally:
