@@ -894,9 +894,12 @@ def anchor(models: dict, top, side, det, urig, srig, bg) -> None:
     time.sleep(1.0)
     send(START, ms=800)
     time.sleep(0.8 + REPEAT_DWELL)
+    # near the model's START: an ungated junk pair moved the base 96 mm (2026-10-31); drift between runs was <= 3 mm
+    measure.expect, measure.expect_mm = arm_model(next(iter(models.values())), [START], [up])[0], 15.0
     got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
+    measure.expect, measure.expect_mm = None, 8.0
     if got is None or got[1] > MISS_MM:
-        raise RuntimeError("START tip not measured: cannot anchor")
+        raise RuntimeError("START tip not measured near the model's START: cannot anchor")
     for name, p in models.items():
         delta = got[0] - arm_model(p, [START], [up])[0]
         p[10:13] += delta
@@ -951,8 +954,7 @@ def local_crossing(img: np.ndarray, urig, goal_xy) -> tuple[np.ndarray, np.ndarr
     obj, _ = prig.snap(prig.undistort(pts, k, d), k, r, t)
     tgt = cv2.projectPoints(np.array([[goal_xy[0], goal_xy[1], 0.0]]), r, t, k, d)[0][0, 0]
     near = np.linalg.norm(pts - tgt, axis=1) < 150.0
-    roll = START[5] if roll is None else roll
-    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}" + ("" if roll == START[5] else f"@{roll}")  # each roll its own memory
+    key = f"{goal_xy[0]:.1f},{goal_xy[1]:.1f}"
     cache = json.loads(PRINTED.read_text()) if PRINTED.exists() else {}
     if near.sum() < 12:
         # the far corner's ruling is lost under some lamp settings (0-2 crossings, 2026-10-30); the printed crossing
