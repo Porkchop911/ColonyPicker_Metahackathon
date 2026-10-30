@@ -271,7 +271,7 @@ def measure(top, side, det, urig, srig):
 
 
 COLLECT_N = 200     # poses (plan step 2)
-ANCHOR_EVERY = 20   # START again, from the + side, every this many poses: drift check
+ANCHOR_EVERY = 20   # START again from +REPEAT_AWAY (gate 0's repeatable side; from below pan scatters 2.6 mm) every this many poses
 DRIFT_MM = 2.0      # an anchor this far from the first one twice in a row ends the run
 SAFE_MM = 25.0      # a pose or its pre-move the model puts lower than this (from the measured START height) is skipped
 
@@ -308,7 +308,7 @@ def collect() -> None:
         print(f"START tip {height:.1f} mm up; {len(plan)} poses", flush=True)
         for i, (pre, q, sign) in enumerate(plan):
             if i % ANCHOR_EVERY == 0:
-                send({**START, **{k: START[k] - REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
+                send({**START, **{k: START[k] + REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
                 time.sleep(1.0)
                 send(START, ms=800)
                 time.sleep(0.8 + REPEAT_DWELL)
