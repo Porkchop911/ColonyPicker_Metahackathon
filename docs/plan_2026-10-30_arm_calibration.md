@@ -264,5 +264,10 @@ at START first (the START tip had moved 3 mm since the tie run) and only uses ta
 `evidence/tip/arm_aim_20261030T212403.json`. Targets sit within ~30 mm of START, where the anchor already absorbs
 most of the nominal error; farther targets should separate the two more. Seen on the way: the overhead mount creeps
 (3.4 px between runs; `cameras()` regrows the pose from the cache, same frame), and the robot/needle moved 3 mm
-between runs (hence the anchor). Next: the 10 mm hover by measured placing, then a crossing touch on open paper
-(nearest open paper is ~40 mm from the START footprint).
+between runs (hence the anchor). 
+**10 mm hover (done):** `arm_calibrate.py hover` places the tip over crossing (-5, 45) on open paper by measured
+placing: calibrated model + accumulated measured correction, 40 -> 25 -> 15 -> 10 mm, up to 3 tries per height, lift
+and stop on a lost tip or a tip below its step. Per step (xy error, height): 40 mm 3.8 -> 1.3 mm (outside the tie data:
+pan +51 pulses); 25 mm 0.65 -> 0.48 mm; 15 mm 3.6 -> 0.29 mm; **10 mm 0.13 mm xy, 9.4 mm up, first try**.
+`evidence/tip/arm_hover_20261030T213200.*` (zoom: tip straight over the crossing in both views, shadow on it).
+Next: the touch, by the same loop below 10 mm in 1-2 mm steps, stopping on contact (side view: tip meets shadow).

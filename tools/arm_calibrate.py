@@ -371,7 +371,11 @@ def measure(top, side, det, urig, srig, bg: np.ndarray | None = None):
         return None
     # overhead: only over the paper: the cyan line art on the box at its right edge met the side ray to 0.01 mm 110 mm
     # from the tip (2026-10-30)
-    tops = [(px, a) for px, a in teal_ends(top.frame(), on_paper=True) if a >= TIP_MIN_PX]
+    tf = top.frame()
+    tops = [(px, a) for px, a in teal_ends(tf, on_paper=True) if a >= TIP_MIN_PX]
+    # off the paper only when nothing is on it: at 40 mm over the far crossings the overhead sees the tip against the
+    # wood beyond the sheet (2026-10-30); the rays must still meet
+    tops = tops or [(px, a) for px, a in teal_ends(tf, on_paper=False) if a >= TIP_MIN_PX]
     if not tops:
         print("tip not found: no teal in the overhead view", flush=True)
         return None
@@ -786,6 +790,83 @@ def aim_solve(p: np.ndarray, goal: np.ndarray, start: dict) -> tuple[dict, float
     return {k: int(round(v)) for k, v in q.items()}, float(np.linalg.norm(goal - tip(q)))
 
 
+def anchor(models: dict, top, side, det, urig, srig, bg) -> None:
+    """Re-anchor at START: the START tip moved 3 mm between the tie run and the A/B (base or needle slip, 2026-10-30);
+    shift each model's base so it predicts the START measured now (translation only, the arm terms untouched)."""
+    from tip_descend import send
+    up = {k: ca.APPROACH for k in (1, 2, 3, 4)}
+    send({**START, **{k: START[k] + REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
+    time.sleep(1.0)
+    send(START, ms=800)
+    time.sleep(0.8 + REPEAT_DWELL)
+    got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
+    if got is None or got[1] > MISS_MM:
+        raise RuntimeError("START tip not measured: cannot anchor")
+    for name, p in models.items():
+        delta = got[0] - arm_model(p, [START], [up])[0]
+        p[10:13] += delta
+        print(f"{name}: anchored at START, base moved {np.round(delta, 1).tolist()} mm", flush=True)
+
+
+HOVER_STEPS_MM = (40.0, 25.0, 15.0, 10.0)  # 60 mm put the tip over the robot body in the overhead (ink not found)
+HOVER_TRIES = 3   # corrections per height
+HOVER_XY_MM, HOVER_Z_MM = 0.5, 1.0  # good enough to go lower
+HOVER_GOAL = (-5.0, 45.0)  # open-paper crossing nearest in joint motion (58 pulses from START), seen by both cameras
+
+
+def hover(goal_xy=HOVER_GOAL) -> None:
+    """Measured placing down to 10 mm over a grid crossing: at each of HOVER_STEPS_MM, solve the calibrated model for
+    the goal shifted by the accumulated correction, approach from 20 pulses above, measure, correct, until within
+    HOVER_XY_MM / HOVER_Z_MM, then go lower. Lifts and stops on a lost tip or a tip below the step it is on (no
+    open-loop low pose: a replayed hover sank ~10 mm and jammed the needle before)."""
+    from tip_descend import read, send
+    models = {"calibrated": np.array(json.loads(ARM_MODEL.read_text())["session"])}
+    top, side, det, urig, srig = cameras()
+    bg = side_background(side)
+    rows = []
+    out = Path(f"evidence/tip/arm_hover_{time.strftime('%Y%m%dT%H%M%S')}.json")
+    q = dict(START)
+    try:
+        anchor(models, top, side, det, urig, srig, bg)
+        corr = np.zeros(3)
+        for h in HOVER_STEPS_MM:
+            goal = np.array([goal_xy[0], goal_xy[1], -h])
+            for attempt in range(HOVER_TRIES):
+                q, resid = aim_solve(models["calibrated"], goal + corr, q)
+                if resid > 1.0:
+                    raise RuntimeError(f"{h:.0f} mm: no solution ({resid:.1f} mm)")
+                send({**q, **{k: q[k] - ca.APPROACH * REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1200)
+                time.sleep(1.2)
+                send(q, ms=800)
+                time.sleep(0.8 + REPEAT_DWELL)
+                got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
+                if got is None or got[1] > MISS_MM:
+                    raise RuntimeError(f"{h:.0f} mm: tip not measured")
+                err = got[0] - goal
+                rows.append({"height_mm": h, "attempt": attempt, "goal_mm": goal.tolist(), "corr_mm": corr.tolist(),
+                             "cmd": {str(k): v for k, v in q.items()}, "read": {str(k): int(v) for k, v in read().items()},
+                             "tip_mm": got[0].tolist(), "miss_mm": got[1], "px": measure.px})
+                print(f"{h:.0f} mm try {attempt}: cmd {[q[k] for k in (1, 2, 3, 4)]} tip height {-got[0][2]:.1f} mm, "
+                      f"error xy {np.linalg.norm(err[:2]):.2f} mm z {err[2]:+.2f} mm (miss {got[1]:.1f})", flush=True)
+                if -got[0][2] < h - 4.0:
+                    raise RuntimeError(f"tip {-got[0][2]:.1f} mm up, below the {h:.0f} mm step: stopping")
+                if np.linalg.norm(err[:2]) <= HOVER_XY_MM and abs(err[2]) <= HOVER_Z_MM:
+                    break
+                corr -= err
+        cv2.imwrite(str(out.with_suffix(".top.jpg")), top.frame())
+        cv2.imwrite(str(out.with_suffix(".side.jpg")), side.frame())
+        print(f"holding over {goal_xy} at 10 mm for the photos; lifting", flush=True)
+        time.sleep(2.0)
+    finally:
+        send({**q, 2: q[2] + 40, 3: q[3] + 40}, ms=1500)  # straight up first, away from the paper
+        time.sleep(2.0)
+        top.close()
+        side.close()
+        SCRATCH.unlink(missing_ok=True)
+        out.write_text(json.dumps(rows, indent=1))
+        print(f"saved {out}", flush=True)
+
+
 def aim(n: int = 10) -> None:
     """Plan step 6, live A/B: grid crossings around the START footprint at AIM_HOVER_MM, the nominal URDF (tied to the
     sheet by the same data) and the calibrated model in turn, order flipped every pair; each move from 20 pulses above,
@@ -796,19 +877,7 @@ def aim(n: int = 10) -> None:
     top, side, det, urig, srig = cameras()
     bg = side_background(side)
     up = {k: ca.APPROACH for k in (1, 2, 3, 4)}
-    # re-anchor: the START tip moved 3 mm between the tie run and the A/B (base or needle slip, 2026-10-30); shift both
-    # models' base so they predict the START measured now (translation only, the arm terms untouched)
-    send({**START, **{k: START[k] + REPEAT_AWAY for k in (1, 2, 3, 4)}}, ms=1000)
-    time.sleep(1.0)
-    send(START, ms=800)
-    time.sleep(0.8 + REPEAT_DWELL)
-    got = next((g for g in (measure(top, side, det, urig, srig, bg) for _ in range(5)) if g is not None), None)
-    if got is None or got[1] > MISS_MM:
-        raise RuntimeError("START tip not measured: cannot anchor the A/B")
-    for name, p in models.items():
-        delta = got[0] - arm_model(p, [START], [up])[0]
-        p[10:13] += delta
-        print(f"{name}: anchored at START, base moved {np.round(delta, 1).tolist()} mm", flush=True)
+    anchor(models, top, side, det, urig, srig, bg)
     start_xy = arm_model(models["calibrated"], [START], [up])[0][:2]
     rng = np.random.default_rng(int(time.time()) % 100000)
     cross = [np.round(start_xy / 5.0) * 5.0 + 5.0 * np.array([i, j]) for i in range(-8, 9) for j in range(-8, 9)]
@@ -871,11 +940,11 @@ def aim(n: int = 10) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "fit-tie", "aim", "selftest", "repeat", "repeat-report"))
+    ap.add_argument("cmd", choices=("collect", "fit", "fit-arm", "fit-tie", "aim", "hover", "selftest", "repeat", "repeat-report"))
     ap.add_argument("data", nargs="*", type=Path, default=[DATA])
     args = ap.parse_args()
     {"collect": collect, "selftest": selftest, "fit": lambda: fit_file(args.data[0]), "repeat": repeat,
-     "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim,
+     "fit-arm": lambda: fit_arm(args.data), "fit-tie": lambda: fit_arm(args.data, tie_only=True), "aim": aim, "hover": hover,
      "repeat-report": lambda: repeat_report(args.data[0])}[args.cmd]()
 
 
