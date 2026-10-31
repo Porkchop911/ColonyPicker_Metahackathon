@@ -125,7 +125,7 @@ def main() -> None:
         return
     if args.source is None:
         out.mkdir(parents=True, exist_ok=True)
-        cam = Camera(0)
+        cam = Camera()
         for n, move in enumerate([None] + args.moves.split(";")):
             if move:
                 drive(*map(float, move.split(",")))  # vx, vy[, seconds]

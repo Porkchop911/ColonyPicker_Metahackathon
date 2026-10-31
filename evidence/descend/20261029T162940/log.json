@@ -1,0 +1,17 @@
+[
+ {
+  "t": 1793287780.08,
+  "phase": "args",
+  "argv": "--out evidence\\descend --lam 190 --jab",
+  "wait_s": {}
+ },
+ {
+  "t": 1793287799.27,
+  "phase": "light",
+  "lamps": [
+   0,
+   254
+  ],
+  "wait_s": {}
+ }
+]

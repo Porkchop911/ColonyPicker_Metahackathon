@@ -14,6 +14,7 @@ import json
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -21,16 +22,23 @@ import numpy as np
 ROBOT = "ubuntu@192.168.0.223"
 # the robot's platform environment (pre-existing control stack: ROS 2, servo driver) + our bridge
 BRIDGE = "source ~/hwr/deploy/env.zsh; python3 ~/colony/servo_bridge.py"
+EXPOSURE_CACHE = Path("evidence/descend/exposure.json")  # last locked step per camera index (plan 11 S3)
 EXPOSURE_TARGET = 140.0  # scene median the MSMF exposure lock aims for (ruling visible, lamps on)
+OVERHEAD = 1  # 4K UGREEN looking down at the sheet (2026-10-29)
+SIDE = 0      # the old 1080p UGREEN, low beside the sheet: sees the tip height above the paper
+SIDE_PAPER = 185.0  # its exposure lock target for the paper (90th percentile): dots found at 183, lost at 223 (2026-10-29)
 
 
 class Camera:
     """UGREEN capture with a locked exposure and a draining reader thread."""
 
-    def __init__(self, index: int = 0, settle_s: float = 3.0):
-        self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():  # DirectShow can lose the device after a USB re-enumeration
-            self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
+    def __init__(self, index: int = OVERHEAD, settle_s: float = 1.0, paper_target: float | None = None):
+        """`paper_target`: lock on the frame's 90th percentile (the paper) instead of its median: the side view is
+        half dark desk and box, and a median lock put its paper at 223 of 255, where SAM lost the faint dots."""
+        self.paper_target, self.index = paper_target, index
+        self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)  # DSHOW: 5 fps at 1080 on the 4K UGREEN, MSMF 30
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             raise RuntimeError(f"camera {index} does not open (DSHOW or MSMF)")
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
@@ -42,6 +50,7 @@ class Camera:
         self._lock_exposure()
         self.cap.set(cv2.CAP_PROP_AUTO_WB, 0)
         self._frames: list[tuple[float, np.ndarray]] = []
+        self._open = True
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _lock_exposure(self) -> None:
@@ -49,19 +58,37 @@ class Camera:
             value = self.cap.get(cv2.CAP_PROP_EXPOSURE)  # DSHOW reports the auto value truthfully
         else:
             # MSMF always reports -6; pick the manual step by the brightness it actually gives
-            scores = []
-            for step in range(-3, -11, -1):
+            target = self.paper_target or EXPOSURE_TARGET
+
+            def miss(step: int) -> float:
                 self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
                 self.cap.set(cv2.CAP_PROP_EXPOSURE, step)
-                for _ in range(4):
+                for _ in range(8):  # the 4K UGREEN lags ~4 frames behind an exposure change
                     ok, img = self.cap.read()
-                scores.append((abs(np.median(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)) - EXPOSURE_TARGET), step))
-            value = min(scores)[1]
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                return abs((np.percentile(gray, 90) if self.paper_target else np.median(gray)) - target)
+            cache = json.loads(EXPOSURE_CACHE.read_text()) if EXPOSURE_CACHE.exists() else {}
+            cached = cache.get(str(self.index))
+            if cached is not None and miss(cached) <= 25.0:  # the lamps are the same as last time: one step, not 8
+                value = cached
+            else:
+                value = min((miss(step), step) for step in range(-3, -11, -1))[1]
+                cache[str(self.index)] = value
+                try:
+                    EXPOSURE_CACHE.write_text(json.dumps(cache))
+                except OSError:  # a cache only
+                    pass
         self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
         self.cap.set(cv2.CAP_PROP_EXPOSURE, value)
 
+    def close(self) -> None:
+        """Release the device (another process can open it then)."""
+        self._open = False
+        time.sleep(0.2)  # let the reader leave its read()
+        self.cap.release()
+
     def _reader(self) -> None:
-        while True:
+        while self._open:
             ok, img = self.cap.read()
             if ok:
                 self._frames = (self._frames + [(time.monotonic(), img)])[-8:]

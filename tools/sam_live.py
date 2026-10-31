@@ -41,7 +41,7 @@ def main() -> None:
     threading.Thread(target=console, daemon=True).start()
     print("loading SAM 3.1 ...", flush=True)
     predictor = sam_detect.load()
-    camera = Camera(0)
+    camera = Camera()
     print(f"ready. prompt '{state['prompt']}' - type a new one + Enter, 't 0.3' for threshold", flush=True)
     while True:
         frame = camera.frame(average=1, settle=0.0)

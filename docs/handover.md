@@ -1,16 +1,134 @@
-# Handover: colony picker, 2026-10-27 (evening)
+# Handover: colony picker, 2026-10-29 (afternoon)
+
+**Current plan: `docs/plan_2026-10-28.md`** (after `docs/rca_touch_dot.md`). The jab below was removed
+from `model_jab.py` on 2026-10-28; the final contact is the watched wrist arc.
 
 ## Where it stands
 
 | Milestone | State |
 |---|---|
-| 1. Touch dots on paper (needle placed by hand) | **THE JAB works and landed ~4-5 mm from a black dot, fully automatic** (`jab.py --live`: UGREEN finds the dot, strafe + elbow/wrist place the tip, one fluid shoulder/elbow/wrist jab). Not yet on the dot. |
+| 1. Touch dots on paper (needle placed by hand) | **First automatic touch on a dot: teal ink mark 1.0 mm from the dot centre** (dot 1, `model_jab.py --jab`, 2026-10-28). Dot 2: placed to 0.63 mm (UGREEN) but the descent stopped in the air. |
 | 2. Pick up the needle, verify the tip | Not started. Tip measurement tools exist (see below). |
 | 3. Colony detection with light control | SAM 3.1 runs live on the UGREEN; Hue lamps are automated. Not tried on a plate. |
 | 4. Pick and transfer | Not started. |
 | 5. Classify | Not started. No Meta/Llama model call yet. |
 
-## THE JAB (user's definition)
+## Session 2026-10-29 (live): new cameras, side contact, 135 s touch
+
+Details and every run: `docs/plan_speedup_2026-10-29.md` §9.
+
+| Item | State |
+|---|---|
+| Cameras | **overhead = 4K UGREEN, index 1** (`rig_io.OVERHEAD`, lens `evidence/tip/ugreen4k_lens.json`, MSMF 1080p 31 fps); **side = old 1080p UGREEN, index 0** (`rig_io.SIDE`), low beside the sheet. `ugreen_dots.json` is in 4K-view pixels: `--dot/--red` take 4K-view pixels |
+| Best run | `20261029T125405`: touch in 135 s, stopped by the side camera (`side-still`); ink ~1.7 mm (low confidence, on an old mark). `20261029T120925`: ink 1.49 mm, clean round blot |
+| Before each run | re-ink the tip (one touch spends it); `python tools/arm_to_start.py <dir>` (start pose, elbow 190: `model_jab` lowers it measured to ~160); stop `sensor_supervisor_node` after any stack restart (by pid, see memory: `pgrep -f` over ssh matches its own shell) |
+| Run | `<hackathon venv python> tools/model_jab.py --out evidence/descend --lam 190 --jab` (no 590 s tool timeout: runs take 135-500 s) |
+| Side camera | 143 mm up, tilted 39 deg. Its pose is solved at every tie from the dots it shares with the overhead (`tt.side_marks` + `tt.side_rig`: SAM "dot" on a paper crop, every 4-point correspondence, f fixed 1148); the grid cannot place it (numbering slips at that slant). Dots triangulate onto the paper within -1.1..+0.8 mm. `model_jab` logs `tri_height_mm` (tip over the paper from overhead + side, mm) at every wrist and contact step. Re-aim with `tools/side_aim.py` (OK at >= 6 of 7 dots) |
+| Demo | `<venv python> tools/dashboard.py [--lan]` -> http://localhost:8000: overhead, side and arm streams with SAM 3.1 detections, click a dot to target it, Arm to start / Run touch / Stop / Park. It holds both UGREENs: run touches from it, not from a second terminal |
+| After | `python tools/arm_park.py <dir>` folds the arm up and back (needle clear of the paper) before power-off |
+| Open | 12 mm sideways start error in 2 of 5 runs (ties exact; differs only in pan 531-533 vs 520-524); side camera not metric (grid and dots not resolvable at its angle: raise it / tilt 15-20 deg down); next touch on a fresh dot to judge accuracy |
+
+## Tomorrow: start here (written 2026-10-29 22:05, battery empty)
+
+**Branch `tipcam-external`** (not merged). Arm last seen lifted over the sheet, upright needle in the gripper with teal ink
+(the battery died; on power-up the arm may have sagged: park it first, `tools/arm_park.py`).
+
+### What was being tested: the upright grasp, teal tip down (user's test)
+The needle hangs nearly vertical below the gripper; the arm camera sees only its back end, so the usable tip comes from
+the overhead + side UGREENs (code on this branch: `tip_cam` from external triangulation, boot-time measurement before
+any motion, `black stick` SAM fallback). Results:
+
+| Finding | Detail |
+|---|---|
+| The tip must start over the **paper** | over the wood the pale teal reads the wood's hue (H 12-22); over the sheet both UGREENs find it |
+| Both UGREENs see the teal tip there | 21:13: tip 40.6/41.1 mm up from two side poses, rays meet within 0.08-0.73 mm |
+| Reach | the arm is near its forward limit: to move the tip over the sheet the needle was tilted (wrist), pose `{2: 409, 3: 180-195, 4: 356}` |
+| **Slack settle drop** | the first step down after moving up drops the tip ~10 mm (9-11 mm in 5 runs) whatever its size; afterwards the start pose itself sits lower |
+| 3.5x step response | model 3 mm steps moved the long needle's tip 8-11 mm; 1-pulse steps sit in the servo deadband (false 'still') |
+| Ink matters both ways | dry tip: no overhead detection (hue 20-29); thick fresh bulb: overhead and side pick points ~5 mm apart (rays miss 5-6 mm) and drips confuse |
+| **Touches happened** (side-only descent, `tools/upright_side_touch.py`) | try 5: contact detected late, ~5-8 mm teal streak (dragged); try 6: tip reached the same spot (end of that streak), little extra drag; both at side-view y ~365-385 after ~20 real moves |
+| Why contact is hard here | the side camera alone cannot tell descending from sliding toward it (both read 'down'); SAM's tip end flips +-6 px between the ink bulb and the metal |
+
+Contact rule now in `tools/upright_side_touch.py` (untested live, try 7 died with the battery): progress along the in-air
+direction, median of pairwise slopes over the last 6 real moves (>= 2 joint pulses each), contact under 0.4 x the in-air
+slope; offline on try 6 it stays quiet through the flips (min 2.0 vs threshold 1.65). Real contact data is still needed.
+
+### Next steps, in order
+1. Robot on -> `tools/preflight.py --sam` (stops the watchdog; the side pose may need the arm out of view).
+2. Re-ink thin (a film, no bulb), wipe drips under the tip.
+3. Run `<venv python> tools/upright_side_touch.py <existing scratch folder>` and **watch it**: it must stop on its own at
+   first contact; if it passes side y ~385, stop it (Ctrl-C) and lift (`send({3: elbow+20})`).
+4. Add the overhead sideways check (fresh thin ink): side slowing + overhead lateral motion = contact.
+5. Then decide the holder: the needle's presentation must put the sharp end over the paper and in both UGREENs' view.
+
+Other state: `tools/upright_touch_session.py` (persistent session: SAM/cameras loaded once, retries) uses the side pose
+from `evidence/tip/side_rig_frame.jpg` (the side camera without the needle in front; camera unmoved all evening, pose
+re-solved 131-136 mm up). `tip_triangulate.side_rig(..., min_dots=)` added. The main touch path (`model_jab.py`, angled
+needle, arm camera sees the tip) is unchanged on `cameras-side-contact-replay` apart from this branch's additions.
+
+## Before the next robot session (2026-10-29 night)
+
+| Step | Command |
+|---|---|
+| Robot on, then preflight (stops the watchdog, checks/restarts the arm camera, cameras, dots, side pose, ink, markers) | `<venv python> tools/preflight.py --sam --start` (or the dashboard's Preflight button) |
+| Before code goes onto the robot | `<venv python> tools/regress.py --out <scratch dir>` (4 recorded runs; FAIL on any Python error) |
+| Markers (optional, hand-drawn on the 5 mm grid) | `python tools/markers.py draw`: ids 8 and 19 on the notebook, id 5 on top of the robot base |
+| Arm model check (~3 min, robot on, arm at start, inked tip) | `<venv python> tools/arm_calibrate.py collect` then `fit`: measures the model's error; offsets only kept if known to 1.5 pulses (self-test: ~+-4-5 pulses with 40 poses, so expect none) |
+
+Offline findings: practice-arc landing predictions vs ink marks 1.2 / 1.9 mm (2 touches): a camera-driven final
+correction (R4b) would land ~1-2 mm, about today's level. Frame writes 3 ms (no gain from background writing).
+
+## Session 2026-10-29 evening: plan section 10 cheap wins, red dots
+
+- Implemented (plan 10.8 "cheap wins"): dots-first tip depth (cube attempt removed), validated + lazy side rig,
+  UGREEN round stop rule (`rounds-stopped`), readback-settled waits (`settle`). Side camera exposure now locks on the
+  paper (`rig_io.SIDE_PAPER`): a median lock put its paper at 223/255 and SAM lost the dots (the 0-dot side-rig failures).
+- Descent stops on the triangulated height (`contact by=tri-height`); far targets strafe first (`reach-strafe`,
+  > 30 mm sideways); overhead black dots by SAM "dot" minus teal (small black dot went blind at dusk); an implausible
+  practice arc (> 15 mm, long curved arcs) is ignored for the hover check's sideways fix.
+- Red dot 1 (1133, 479): touched 170928, tip on the dot at contact (~1 mm by eye, dry tip, no mark).
+- Red dot 2 (1302, 359): 5 tries, no touch: argmin crash on an empty arm view (fixed), 32 mm not strafed (threshold
+  35 -> 30), 0 overhead dots (prompt fixed), practice arc 17.5 mm (now ignored), last: start tie failed (cube/dots not
+  agreeing; base drifted from strafe-backs?). Red dot 3 (904, 563) not tried.
+- Other agent (Muse, .pi/): ran 3 live runs in parallel, changed side_rig (one-to-one matching) and placing (reversal
+  hold, roll deadband). Its `evidence/replay_new/`, `evidence/live_run_stdout*.txt`, `nul` are untracked leftovers.
+- Arm parked {2: 900, 3: 0}. Nothing committed since ab37796.
+
+## Session 2026-10-28 (live): what changed in `model_jab.py`
+
+The needle is held at an angle on purpose: the final contact is a **wrist turn**, not the jab.
+Run: `model_jab.py --out evidence/descend --lam 190 --jab [--dot U V]` from the start pose
+`{1:497, 2:420, 3:225, 4:269, 5:502}` (servo 2 commanded 431: it settles ~11 short when rising).
+
+| Finding (live) | Change |
+|---|---|
+| Servo 2 rises, but settles a fixed ~11 pulses short (17-26 at full reach); 26-30 C, 12.2 V | command +11 when rising; start-pose return in steps 380 -> 431 |
+| Dots 100+ mm beyond the arc's reach; shoulder cap 100/move | the move splits to respect `SHOULDER_MAX`, measured between parts |
+| Pan sticks then jumps 13-20 mm at reach; noisy gain flipped sign, ping-pong | steps <= 2, the gain sign is never flipped, no relearn on reversals; pan only beyond 6 mm |
+| **Roll (servo 5) moves the tip 0.26 mm/pulse sideways**, deadband 1-2, backlash ~0.5 mm | roll closes the last 6 mm; the arm-camera tip pixel is re-found after each roll step (20 px guard) |
+| Sideways steps happened at 5.6 mm; along sat at -57 mm while sideways stepped | sideways only at >= 8 mm and once along <= 10 mm |
+| First move lands 6-13 mm low; along swung +-12 at GAIN 0.6 | `FIRST_MARGIN_MM` 15, `GAIN` 0.35, `PLACE_ITERS` 30 |
+| The arm tie aimed 8-12 mm beside dot 2 (one dot in the arm view) | one-dot ties checked against the model carry; **UGREEN checks the arc's landing at hover**, sideways error re-aims placing (up to 3 rounds, from hover) |
+| Arm-camera height read 0 with the tip above the paper; wrist read-back lag 2 and 3 both fired in the air | 1-pulse wrist steps past the height stop; **contact = the UGREEN teal tip still for 2 steps**; lag >= 6 is only a backstop |
+| UGREEN tip: "darker than before" fails on the teal tip | `teal_tip`: saturated-teal blob, rotated-rectangle elongation, lowest blob |
+| The inked tip drips while hovering (2 round drips on the sheet) | drips are round and ignored by `teal_tip`; marks are judged by a before/after saturation diff |
+
+Afternoon (red dots, `--red U V`):
+
+| Finding (live) | Change |
+|---|---|
+| Dot 2 touched by the "still" rule, mark 2.35 mm off; then dot 2 was under teal ink and SAM saw 2 black dots | a missing dot is filled from `ugreen_dots.json` if the others sit within 15 px |
+| SAM "red dot" finds none; "small red dot" finds all 5 | `--red U V` targets the nearest red dot |
+| Model arc travel off -5 / +7 mm along (red 1 landed 10 mm past) | **practice arc**: wrist down to 4 mm in the air, UGREEN teal tip travel extrapolated to the paper, re-aims along |
+| Full UGREEN re-aims swung -12/+10/-8 mm (pan) | `UG_GAIN` 0.5; unconverged rounds no longer touch (unless the last check is under 5 mm) |
+| Inked black dot: the tie matched 0 dots, placing swung +-20 mm | red dots are tie points in both views (matched 5) |
+| Red 2: practice predicted 1.1 mm, tip landed ~5 mm short and slid through the dot | open: practice arc lower (~2 mm), stop contact at the first stalled frame |
+
+Roll/elbow/wrist per-pulse data: `evidence/roll_tri/20261028T085059_spike/log.jsonl`. Gate decided: roll
+qualifies, **gate 1 mm**. Untested live: the "still" contact rule (replayed offline on saved frames: it fires
+after the tip stops) and the UGREEN re-aim with roll after the rename fix.
+
+## THE JAB (user's definition, removed 2026-10-28)
 
 From an aimed pose about 10 mm up, the tip moves **10 mm forward and 10 mm down in one fluid move of several
 servos at once**: the dot lies where the tip's camera ray meets the paper, ahead of the tip and not hidden.
@@ -56,21 +174,21 @@ Run with the worktree venv: `D:/robot/highwonder_rework/.worktrees/hackathon/.ve
 
 | Problem | What to do |
 |---|---|
-| **Servo 2 would not rise** at the end of the day (285-300 commanded, stays 279; down still works), even unloaded, cool to the touch, robot on power. | Unresolved. Read its temperature/voltage with the driver stopped (`hwr_core/rrc/board.py` `servo_temp`, `servo_vin`). The jab needs it. |
+| Servo 2 settles ~11 pulses short when rising (17-26 at full reach), 2-3 when falling; temperature and voltage normal (2026-10-28). | Command past the target when rising. |
 | Never build a servo command from read-back (servo 2 reads ~5 low; re-sending sinks it). | All tools command from fixed values (`--start`, `commanded()`). |
 | Elbow lags its command 11-14 pulses under load; the shoulder sticks when asked to rise under load. | Returns to start come from a fixed side (PRELOAD) with the elbow up first; placing uses elbow/wrist, the shoulder only moves down (in the jab). |
 | Strafe speed varies 8-51 mm/s between runs (mecanum slip). | Measured by the UGREEN each time and relearnt as it goes. |
-| Pan barely moves the tip sideways in the UGREEN view (~0.3 mm/pulse). | Sideways by strafe. |
+| Pan at reach: stick-slip, 0 mm then 13-20 mm jumps; strafe went the wrong way twice (2026-10-28). | Pan beyond 6 mm, roll below; no strafe. |
 | Lamp `auto_light` rejects views with little grid. | `aim_touch` falls back to lamp 13 at 254. |
 
 ## Next steps
 
-1. Get servo 2 rising again (temperature/voltage readout, then decide).
-2. `jab.py --live jab.json --fwd 16`: should close the 4-5 mm miss. Then 5 dots in a row.
-3. Relearn the jab from the 10 mm placing height rather than 24 mm, so `--fwd` needs no correction.
+1. Dot 2 again with the "still" contact rule; then the gate: 2 in a row, 4 of 5 (1 mm, ink mark vs dot).
+2. If the tip stops in the air before the paper (no mark), lower `CONTACT_STILL_PX` or require 3 steps.
+3. Blot the tip after inking, so it does not drip while placing.
 4. Milestone 3: plate under the lamps, SAM 3.1 colony detection, light sweep.
 5. Add the Meta/Llama model call for pick/classify decisions (the pitch depends on it).
 
 ## Evidence
 
-Run images and logs are in the session scratchpad, not in the repo.
+Run images and logs: `evidence/descend/2026102808*` - `20261028T1003*` (ink before/after: `teal_*_touch*.jpg`), `evidence/roll_tri/20261028*`.

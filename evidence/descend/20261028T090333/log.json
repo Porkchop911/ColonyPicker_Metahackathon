@@ -1,0 +1,33 @@
+[
+ {
+  "t": 1793174641.82,
+  "phase": "light",
+  "lamps": [
+   254,
+   0
+  ]
+ },
+ {
+  "t": 1793174672.59,
+  "phase": "tip-depth-failed",
+  "how": "cube",
+  "error": "UGREEN: nothing long and thin moved on the sheet"
+ },
+ {
+  "t": 1793174690.11,
+  "phase": "abort",
+  "error": "RuntimeError('SAM 3.1 found no red cube in the ugreen view')"
+ },
+ {
+  "t": 1793174692.34,
+  "phase": "lift",
+  "readback": {
+   "1": 499,
+   "2": 415,
+   "3": 178,
+   "4": 269,
+   "5": 501,
+   "10": 656
+  }
+ }
+]
