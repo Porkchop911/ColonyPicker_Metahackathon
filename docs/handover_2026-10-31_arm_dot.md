@@ -1,7 +1,8 @@
 # Handover 2026-10-31: arm calibration, camera rig, dotting grid crossings
 
-Branch `claude/mlp-servo-tip-mapping-61ee3b` (worktree `.claude/worktrees/mlp-servo-tip-mapping-61ee3b`), last commit
-before this file `60337e4`. Not pushed, no PR. Plan and results: `docs/plan_2026-10-30_arm_calibration.md`.
+Branch `claude/mlp-servo-tip-mapping-61ee3b` (worktree `.claude/worktrees/mlp-servo-tip-mapping-61ee3b`), pushed at
+`d4b27e4`, open as PR https://github.com/Porkchop911/ColonyPicker_Metahackathon/pull/1 (54 commits into `main`, no CI).
+Plan and results: `docs/plan_2026-10-30_arm_calibration.md`.
 Run everything with `D:/robot/highwonder_rework/.worktrees/hackathon/.venv/Scripts/python.exe`.
 
 ## Robot state right now (fix first)
@@ -48,7 +49,7 @@ away) and commands clamp at 999. A command after a hand rotation wound the gripp
    vertical near ~1000 (user's call; hand-set-and-hold works only until the next roll command).
 3. `fit-tip --roll <vertical pulse>` (~4 min), check reach of open-paper crossings with pan within +-25 of 497 (at roll
    1000 that was crossings around y = 140-155 mm in the sheet frame), then `dot` with fresh ink.
-4. Later: more tie poses near the far crossings, `model_jab --calib`, push + PR.
+4. Later: more tie poses near the far crossings, `model_jab --calib`; merge PR #1 once the robot is restored.
 
 ## Standing user rules (memory)
 
