@@ -1,7 +1,71 @@
-# Handover: colony picker, 2026-10-29 (afternoon)
+# Handover: colony picker, 2026-10-30 (morning)
 
-**Current plan: `docs/plan_2026-10-28.md`** (after `docs/rca_touch_dot.md`). The jab below was removed
-from `model_jab.py` on 2026-10-28; the final contact is the watched wrist arc.
+**Current plan: `docs/plan_2026-10-28.md`** (after `docs/rca_touch_dot.md`); today's goals: `docs/plan_2026-10-30.md`.
+The jab below was removed from `model_jab.py` on 2026-10-28; the final contact is the watched wrist arc.
+
+## Session 2026-10-30: start here
+
+**Branch `tipcam-external`, nothing committed today.** Arm at the start pose, angled needle in the gripper (655),
+tip inked. Report on the last touch (pictures): https://claude.ai/artifact/MwcLxv8yfKkLgE6PajEsUs
+
+### Result
+Touch 1 on the upper dot (overhead px 1177.9, 569.5), run `evidence/descend/20261030T103024`: **ink mark 3.6 mm off**
+(3.5 mm short along the needle, towards the robot; 0.9 mm sideways), clean blot, no drag. In-run estimates were all better
+(practice arc 0.7, overhead tip end 2.0, arm camera 1.9 mm). Remaining dots: centre (1173, 613), right (1261, 621);
+the left dot (1080, 605) carries the user's hand-guided touch blot.
+
+### Next, in order — AGREED plan: `docs/plan_speed_accuracy_2026-10-30_AGREED.md`
+
+Merged from the two agent plans of 2026-10-30 (`_meta`, `_OPUS`; review `plan_review_2026-10-30_meta.md`).
+Targets: touch **≤ 120 s** start → lift; ink mark **≤ 1.5 mm**, then the gate (**1 mm, 2 in a row, 4 of 5**);
+accuracy is measured on the mark, split (along, across) — Touch 1's in-run estimates said 0.8/0.1 mm against
+the real 3.6 mm. One writer on `tools/model_jab.py` at a time; nothing committed until the user says so.
+
+| # | Do | Who | Pass gate |
+|---|---|---|---|
+| 1 | **Regress hygiene.** Replay loads each run's own `ugreen_dots.json` (saved into the run folder at tie time; parent file as fallback); add `20261030T103024` to `tools/regress.py`; re-baseline | meta | 5/5, no crash-type errors |
+| 2 | **Diagnostics (offline).** D1: replay round 2 of 103024 from saved arm frames (grid pose, dots, tie pairing, along per frame → grid-slip vs tie-alias). D2: `tools/mark_bias.py` — every historical mark as (along, across), mean/std. D3: overhead ray tilt at the dots, mm/mm. D4: `pose0` 15.5 s stall cause | meta | four outputs into the AGREED plan's results log |
+| 3 | **S1a + S2.** Reject impossible re-ties: > 4 mm beyond model prediction after a ≤ 3-pulse move → re-snap, median of ≤ 3; a 0-dot carry never drives a > 2 mm move; `place-skip` consumes the median. Settle sized by jump (400/800/1500 ms; keep 1500 when servo 2 rises) | one writer | replay 103024 iterations drop; regress 5/5 |
+| 4 | **5th dot on the sheet** (side pose needs 5; Touch 1's failed, so no triangulated height) | user | `tools/side_aim.py`: ≥ 5 dots agree |
+| 5 | **Live touch 2**, centre dot (1173, 613): `arm_to_start.py`, thin re-ink (last 2–3 mm only — Touch 1's film ended ~8 px above the point; ~1.5 mm of its error), `model_jab.py --jab --dot 1173 613 --along -3.9` (skips the practice arc) | user + driver | time, mark (along, across), contact rule fired → handover table |
+| 6 | **A1 (+ A2).** Practice arc `PRACTICE_H` 4.0 → 2.0, teal tip every step, quadratic along(h) at h = 0 (fallback < 3 samples; degrade to arm height without tri-height). If D2 std < 0.7 mm: `MARK_BIAS_MM` at the arc landing, refit after every touch | one writer | regress 5/5; practice prediction vs tip end < 0.7 mm |
+| 7 | **Conditional speed.** S1b (overhead places for rnd ≥ 1) only if D3 ≤ ~0.3 mm/mm and ≤ 120 s still needs it; S4 descent steps 6/3/1; S5 per D4 | one writer | regress 5/5 |
+| 8 | **Live touches 3–5** (right dot 1261, 621; red dots), fresh dot + thin ink each, mark measured every time | user + driver | ≤ 120 s, ≤ 1.5 mm each; then the 1 mm gate |
+
+Deferred unless ≤ 90 s is ever required: learned Jacobian / persistent daemon (plan_speedup R3/R6).
+`--along` retires as the default aim if step 6 lands (stays as manual override).
+`--along -3.9`, not +3.5: `--along` *replaces* the UGREEN fix (`model_jab.py` `ug_fix[0] = args.along * fwd`), and touch 1's
+fix was already -7.4 mm along fwd (+fwd = away from the robot) when the mark landed 3.5 mm short: -7.4 + 3.5. ±1 mm (the sheet
+frame re-fits every retie), valid near the upper/centre dots only; confirm the sign with D2's mark tool on 103024 first.
+
+Progress: **step 1 DONE — regress 5/5** against the re-saved `evidence/descend/regress_baseline.json` (details in the AGREED plan's results log); step 2 diagnostics (D1–D4) in progress. Step 1 shipped: per-run dots seeded; `tools/replay_run.py` prefers the run's own file;
+`tie-inputs` added to the compare skip set) — regress re-verification running. Already in the tree:
+`side_teal` guards (`SIDE_TRACK_PX=30`, `SIDE_WINDOW_PX=90`: Touch 1's false "side-still" at y 1079 killed,
+replay-verified) and `place-skip` (`SKIP_TOL_MM=1.0`: the 14 no-op 1-pulse iterations of Touch 1 round 2).
+Baseline segments for step timing: startup 47 s (`pose0` snap 15.5 s; failed side-rig ~14 s), placing 117 s
+(29 reties × 4.2 s; round-2 flips are measurement, not motion), practice arcs ~25 s, descent 25 s.
+
+### Changed today
+| File | Change |
+|---|---|
+| `tools/model_jab.py` | arm-view dots: "dot" fallback at dark 0.85 when "black dot" finds none (sunlit view: tie had 0 dots); overhead `teal_tip`: blob must sit on paper (median gray under it > 110: the keyboard box's teal line art took the tip twice) and on the final arc only within 60 px of the last tip; `CONTACT_EXTRA` 3 -> 6 (touch stopped in the air at 3); `tie-inputs` log row |
+| `tools/teach.py` (new) | hand-guided teaching: servos limp, readback logged, keyframes. Torque back on = a position command (the board's "torque on" left them limp) |
+| `robot/hwr_driver_node.py` (new, vendored) | robot driver + `servo_torque` topic; deployed to `~/hwr/.../driver_node.py` (backup `.bak_20261030`). **Never run `highwonder_rework/deploy/sync.ps1`: the local repo still has the e-stop and is behind the robot** |
+| `robot/servo_bridge.py` | `{"torque": {...}}` command (deployed) |
+| `tools/teleop.py` | gripper (servo 10) on the panel |
+| `tools/needle_grasp.py`, `tools/upright_dot_touch.py`, `tools/upright_side_touch.py` | EXPERIMENTAL, not working (below) |
+
+### Abandoned today (user: back to the angled needle)
+| Try | Outcome |
+|---|---|
+| Underside touch (needle hanging, tip hidden from the arm camera; overhead aims, side detects contact) | `upright_dot_touch.py` aimed onto the dot, then pressed 18 mm: its in-air rate came from steps already stalled. Aim moves at low height let the tip sink ~20 px/step (slack). SAM reads the inked needle as "pen" (0.79), not "needle" |
+| Needle pick-up from a Falcon tube on a tripod | hand-taught path `evidence/teach_20261030/path.json`; replay missed (elbow sags 11 pulses under its command). Look-from-camera axis: views from the folded pose have no baseline (axis 151 mm off); calibration went limp unattended and crashed the tripod (fixed: no unattended limp). The tripod moved since; user: needle placed by hand is fine |
+
+### Incidents
+- Servo commands accepted but no joint moved for ~1 min (readback frozen at shoulder 231), then recovered by itself. Cause unknown.
+- `sudo systemctl restart hwr` moved the parked arm (shoulder 900 -> 725): restart only with the arm supported.
+- The UGREENs hang if a browser tab holds them: close it (use the dashboard instead).
+- `tools/regress.py` 1/4: the replays need the `ugreen_dots.json` of their day (found 2, expected 4), not today's changes.
 
 ## Where it stands
 

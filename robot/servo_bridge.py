@@ -7,6 +7,9 @@ One command per stdin line, one JSON reply per line on stdout:
 
     {"set": {"1": 500, "10": 680}, "ms": 300}  -> {"ok": true}
     {"read": true}                              -> {"pulses": {"1": 500, ...}, "age": s}
+    {"torque": {"3": false}}                    -> {"ok": true}   (false = limp for teaching, true = hold)
+    {"raw": [43, 5], "reply": true}              -> {"ok": true}   EXPERIMENTAL verbatim bus-servo
+                                                 payload probe (driver logs any reply bytes)
     {"snap": true}                              -> {"jpeg": base64, "age": s}
 
 Snapshots older than MAX_FRAME_AGE are refused: the camera can stall for ~10 s while the last frame
@@ -38,6 +41,8 @@ def main() -> None:
     rclpy.init()
     node = Node("colony_servo_bridge")
     publisher = node.create_publisher(ServoCommand, "servo_cmd", 10)
+    torque = node.create_publisher(ServoCommand, "servo_torque", 10)  # hwr_driver: position 0 = torque off
+    raw_pub = node.create_publisher(ServoCommand, "servo_raw", 10)  # EXPERIMENTAL probe, see hwr_driver
     state: dict = {}
 
     def on_joints(msg: JointState) -> None:
@@ -71,6 +76,20 @@ def main() -> None:
                 publisher.publish(ServoCommand(duration_ms=int(cmd.get("ms", 500)),
                                                ids=list(targets), positions=list(targets.values())))
                 reply = {"ok": True}
+            elif "raw" in cmd:
+                payload = [int(b) for b in cmd["raw"]]
+                if not 1 <= len(payload) <= 8 or (len(payload) >= 2 and payload[1] not in SERVO_IDS):
+                    raise ValueError(f"bad raw payload {payload}")
+                raw_pub.publish(ServoCommand(duration_ms=0,
+                                             ids=[1 if cmd.get("reply") else 0],
+                                             positions=payload))
+                reply = {"ok": True}
+            elif "torque" in cmd:
+                states = {int(k): bool(v) for k, v in cmd["torque"].items()}
+                if not states or any(k not in SERVO_IDS for k in states):
+                    raise ValueError(f"bad torque ids {states}")
+                torque.publish(ServoCommand(duration_ms=0, ids=list(states), positions=[int(v) for v in states.values()]))
+                reply = {"ok": True}
             elif "read" in cmd:
                 if "joints" not in state:
                     raise RuntimeError("no joint_states yet")
@@ -89,7 +108,7 @@ def main() -> None:
                 ok, jpeg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
                 reply = {"jpeg": base64.b64encode(jpeg.tobytes()).decode("ascii"), "age": round(age, 2)}
             else:
-                raise ValueError("expected set, read or snap")
+                raise ValueError("expected set, torque, read or snap")
         except Exception as error:  # report, keep serving
             reply = {"error": f"{type(error).__name__}: {error}"}
         print(json.dumps(reply), flush=True)

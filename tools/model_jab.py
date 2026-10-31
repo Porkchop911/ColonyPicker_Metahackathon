@@ -86,9 +86,11 @@ SHOULDER_SLIP = 3         # read-back pulses below its start: the shoulder is gi
 PLACE_FLOOR_MM = 5.0      # any measured height under this while placing stops the run
 SHOULDER_MAX = 100        # pulses per move, downward only (it does not follow upward under load)
 GAIN = 0.35               # corrections after the first move: small elbow/wrist moves go ~2.5x the model at reach, 0.6 swung along -9/+14/-10 (live 2026-10-28)
+SKIP_TOL_MM = 1.0         # place: along/height both within this of a sideways-only iteration's aim: sideways is measured, not moved, this iteration (roll/pan/strafe own it) without commanding 1-pulse along noise; the skip's side error is the UGREEN round's business (final aim ran 14 such iterations in 20261030T103024)
 SHEET_MARGIN_PX = 6       # a target dot lies this far inside the grid-crossings outline
 BLACK_GRAY = 80           # arm camera: black ink below this (aim_touch.BLACK_GRAY)
-CONTACT_EXTRA = 3         # wrist pulses past the arm camera's paper height: it read -0.1 mm with the tip still above (live 2026-10-28); each pulse past contact drags the tip ~0.76 mm (red 2 streak, 2026-10-28)
+CONTACT_EXTRA = 6         # was 3: stopped in the air at 3 (2026-10-30, no ink) when the tip tracking was lost; the still rules stop it on contact.
+                          # Wrist pulses past the arm camera's paper height: it read -0.1 mm with the tip still above (live 2026-10-28); each pulse past contact drags the tip ~0.76 mm (red 2 streak, 2026-10-28)
 CONTACT_LAG = 6           # wrist read-back this far behind: backstop only; 2 and 3 fired in the air (live 2026-10-28), the tip standing still decides
 CONTACT_STILL_PX = 1.0    # the UGREEN teal tip moved less than this on 2 running 1-pulse steps: resting on the paper
 TRI_STOP_MM = 0.5         # the descent stops when the tip, triangulated from the overhead and side views, is this high:
@@ -96,7 +98,10 @@ TRI_STOP_MM = 0.5         # the descent stops when the tip, triangulated from th
 ROLL_EXT_MM = 6.0         # a roll step moves the tip ~2-4 mm: a bigger external jump is a bad re-tie, the arm view decides
 TRI_MISS_MM = 3.0         # ... if the two rays pass this close (they missed by 0.4-1.4 mm in the air)
 SIDE_STILL_PX = 1.5       # side view: a 1-pulse wrist step moves the tip ~2.3 px down in the air; touching it went 4, 2, 1 (2026-10-29)
+SIDE_TRACK_PX = 30.0      # side_teal: a bigger step than this in one frame is another blob, not the needle (run 20261030T103024 jumped +69 px/step onto frame-edge ink). The window radius is raised above this so the biggest-blob pick can reach it: a legit 3-pulse descent step moves 49.6-83.2 px (replay of 20261030T103024)
+SIDE_WINDOW_PX = 90       # side_teal search radius: above the biggest legitimate per-step motion, SIDE_TRACK_PX still guards
 WRIST_STEP = 3            # pulses per measured wrist step on the final arc
+TIP_JUMP_PX = 60          # final arc, overhead: a teal blob this far from the last tip is not the tip (1-pulse steps move it ~3 px)
 LIFT_ELBOW = 40
 
 
@@ -279,7 +284,7 @@ def main() -> None:
         raise RuntimeError("SAM 3.1 did not load (see the traceback above)")
     predictor = loaded["predictor"]
 
-    def teal_tip(img: np.ndarray):
+    def teal_tip(img: np.ndarray, near=None):
         """Lowest pixel of the teal-inked tip in a UGREEN frame (the long thin saturated-teal blob; the paper reads
         S~90 there and the round drips are not long), or None."""
         def teal(im):
@@ -293,12 +298,23 @@ def main() -> None:
             (_, _), (w, h), _ = cv2.minAreaRect(np.column_stack(np.nonzero(lab == j)[::-1]).astype(np.float32))
             return max(w, h) >= 2 * max(min(w, h), 1.0)  # the blotted tip: 2.4:1; round drips ~1:1, old streaks masked
         # shortcut: the binder rings fill the bottom ~10% of the UGREEN frame; use the sheet polygon if the notebook moves up
-        keep = [j for j in range(1, count) if 30 <= st[j, 4] < 5000 and st[j, 1] + st[j, 3] < 0.9 * img.shape[0] and long_(j)]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        def on_paper(j):  # the keyboard box's teal line art at the frame's right edge took the tip twice (2026-10-30): the
+            # tip's lowest end sits on bright paper, the art on the dark box
+            x, y, w, h = st[j, :4]
+            return float(np.median(gray[y + h:min(y + h + 12, gray.shape[0]), x:x + w + 1])) > 110
+        keep = [j for j in range(1, count) if 30 <= st[j, 4] < 5000 and st[j, 1] + st[j, 3] < 0.9 * img.shape[0] and long_(j)
+                and on_paper(j)]
+        if near is not None:  # on the final arc the tip moves a few px per step: a blob far off is other teal (the keyboard box's line art
+            # at (1862, 650) took the tip mid-arc, the "still" rule never fired and the arc stopped in the air, 2026-10-30)
+            keep = [j for j in keep if np.linalg.norm(np.array([st[j, 0] + st[j, 2] / 2, st[j, 1] + st[j, 3]]) - near) < TIP_JUMP_PX]
         if not keep:  # a thin blotted film fades into the paper as the light changes: SAM found it in 5 of 5 frames (2026-10-28)
             try:
-                return sam_needle_tip(img, "ugreen_tip_sam", far_up=False)
+                t_ = sam_needle_tip(img, "ugreen_tip_sam", far_up=False)
             except RuntimeError:
                 return None
+            return None if near is not None and np.linalg.norm(t_ - near) >= TIP_JUMP_PX else t_
         # the needle enters from the image top, so its tip is the lowest end; a teal glint near the top took "biggest"
         vs, us = np.nonzero(lab == max(keep, key=lambda j: st[j, 1] + st[j, 3]))
         tip = np.array([us[vs == vs.max()].mean(), vs.max()], float)
@@ -420,14 +436,20 @@ def main() -> None:
         """Tie points in the arm view: black dots plus red dots (a touched black dot is under teal ink: the tie
         matched 0 dots and placing swung +-20 mm, live 2026-10-28). A mask found by both prompts counts once."""
         pts = list(sam_find(img, name, "black dot", (20, 300), 0.4, 0.3))  # 0.4 missed the one dot in view
+        if not pts:  # sunlit arm view (2026-10-30 10:17): "black dot" none; "dot" found them, pale (0.76-0.81 x paper), 18-25 px;
+            # the binder holes come along but match no overhead dot, so the tie's geometry drops them
+            pts = list(sam_find(img, name + "_dot", "dot", (10, 300), 0.85, 0.3))
         for q in sam_find(img, name + "_red", "small red dot", (10, 80), 1.0, 0.3):
             if all(np.linalg.norm(q - p_) > 6.0 for p_ in pts):
                 pts.append(q)
         return np.array(pts, float).reshape(-1, 2)
 
-    def side_teal(img: np.ndarray, prev, r: int = 70):
+    def side_teal(img: np.ndarray, prev, r: int = SIDE_WINDOW_PX):
         """The inked tip in the side view by colour: the lowest pixel of the biggest teal blob within `r` px of its last
-        place (the window keeps other ink and the green parts out), or None."""
+        place (the window keeps other ink and the green parts out), or None. A candidate further than SIDE_TRACK_PX
+        from the last accepted place, or on the image's bottom row, is rejected and the window's centre stays: in
+        run 20261030T103024 the blob locked onto ink at the frame edge (y 1079, +69 px/step) and `side-still` fired
+        on it, stopping the wrist while the tip was still in the air."""
         x, y = int(prev[0]), int(prev[1])
         x0, y0 = max(0, x - r), max(0, y - r)
         m = cv2.inRange(cv2.cvtColor(img[y0:y + r, x0:x + r], cv2.COLOR_BGR2HSV), (45, 35, 50), (100, 255, 255))
@@ -436,7 +458,10 @@ def main() -> None:
         if not keep:
             return None
         vs, us = np.nonzero(lab == max(keep, key=lambda j: st[j, 4]))
-        return np.array([us[vs == vs.max()].mean() + x0, vs.max() + y0], float)
+        cand = np.array([us[vs == vs.max()].mean() + x0, vs.max() + y0], float)
+        if cand[1] >= img.shape[0] - 1 or np.linalg.norm(cand - prev) > SIDE_TRACK_PX:
+            return None  # not the needle: side_look keeps the last place and falls back to SAM
+        return cand
 
     def side_pose(img: np.ndarray, sheet_mm: np.ndarray) -> dict:
         """The side camera's pose from the dots it shares with the UGREEN (tt.side_marks, tt.side_rig)."""
@@ -555,6 +580,7 @@ def main() -> None:
         if len(ug_px) != len(known):
             raise RuntimeError(f"SAM 3.1 found {len(ug_px)} black dots on the notebook in the UGREEN, expected {len(known)}")
         known_file.write_text(json.dumps(ug_px.tolist()))
+        (out / "ugreen_dots.json").write_text(json.dumps(ug_px.tolist()))  # this run's day's set: replays load it, not the latest (a new sheet layout broke every replay on 2026-10-30)
         ug_tie = np.vstack([ug_mm, np.array([tt.on_sheet(q, uk, ud, ur, ut)[:2] for q in red_px]).reshape(-1, 2)])
         cube_u = cube_centre(ug_img, "ugreen", lambda q: tt.ray(q, uk, ud, ur, ut))
         ug_marks = mk.on_paper(mk.detect(ug_img), lambda q: tt.on_sheet(q, uk, ud, ur, ut)[:2])  # they do not move
@@ -629,6 +655,7 @@ def main() -> None:
             rot_u, off_u, matched = mt[0], mt[1], 2 + mt[2]
             note(phase="marker-tie", markers=mt[2], rms_mm=mt[3])
         else:
+            note(phase="tie-inputs", ug_mm=np.round(ug_tie, 1), arm_mm=np.round(arm_mm, 1), cube_u=cube_u, cube_a=cube_a)  # a failed tie is undebuggable without them
             rot_u, off_u, matched = match_frames(ug_tie, arm_mm, cube_u, cube_a)
         if matched < 2:  # one dot + the cube is good only to CUBE_TOL_MM
             raise RuntimeError(f"cameras tied on {matched} dot: need 2 (black or red) in the arm view")
@@ -923,6 +950,9 @@ def main() -> None:
                 corr = aim - tip
                 if it > 0:
                     corr[:2] = (corr[:2] @ fwd) * fwd  # along and height by the arm; sideways is pan/strafe's
+                    if abs(corr[0] * fwd[0] + corr[1] * fwd[1]) <= SKIP_TOL_MM and abs(corr[2]) <= SKIP_TOL_MM:
+                        note(phase="place-skip", it=it, along_mm=float(corr[:2] @ fwd), height_mm=float(corr[2]))
+                        break  # along/height are placed; only sideways is out, and the UGREEN round re-aims it
                 goal = ca.tip_in_base(cmd, tip_cam) + a.T @ (corr * (1.0 if it == 0 else GAIN))  # relative: model offset drops out
                 new, residual = ca.solve(base, tip_cam, goal, free)
                 if 2 in free and new[2] > cmd[2] + 0.5:  # the shoulder does not follow upward under load: the tip
@@ -1122,7 +1152,7 @@ def main() -> None:
             sleep(0.6)
             cmd = {**cmd, 4: nxt}
             ug_f = ugcam.frame()
-            now_px, lag = teal_tip(ug_f), abs(read()[4] - nxt)
+            now_px, lag = teal_tip(ug_f, near=prev), abs(read()[4] - nxt)
             moved = float(np.linalg.norm(now_px - prev)) if now_px is not None and prev is not None else None
             s_px, s_down, s_h = side_look(f"contact_{extra:02d}", now_px)
             note(phase="contact-step", wrist=nxt, extra=extra, tip_px=now_px, moved_px=moved, lag=lag,
@@ -1135,7 +1165,7 @@ def main() -> None:
             if lag >= CONTACT_LAG or stills >= 2 or side_stills >= 2:
                 contact = "stall" if lag >= CONTACT_LAG else "still" if stills >= 2 else "side-still"
                 break
-            prev = now_px
+            prev = now_px if now_px is not None else prev  # a lost frame keeps the window where it was
         note(phase="contact", by="tri-height" if tri_stop else contact, wrist=cmd[4])
         im, rot, t, blobs2, (a, b) = view(cmd)
         cv2.imwrite(str(out / "contact_arm.png"), im)

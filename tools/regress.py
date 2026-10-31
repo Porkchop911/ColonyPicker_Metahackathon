@@ -22,6 +22,7 @@ RUNS = {  # recorded runs with every frame saved: what each exercises
     "20261029T172244": "reach strafe, re-tie, UGREEN rounds, practice arc",
     "20261029T152609": "touch on a black dot chosen with --dot, long placing",
     "20261029T171326": "reach strafe, then an arm view with no dots (the vote_offset crash)",
+    "20261030T103024": "touch on the upper dot with --dot: place-skip, side_teal guards, --along path (2026-10-30 baseline)",
 }
 BASELINE = Path("evidence/descend/regress_baseline.json")
 OWN_ABORTS = ("RuntimeError", "OutOfFrames", "KeyboardInterrupt")

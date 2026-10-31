@@ -51,7 +51,8 @@ def frames(run: Path, log: list[dict]) -> tuple[list[Path], list[Path], list[Pat
 def replay(run: Path, out: Path, pose0: dict[int, int], extra: list[str]) -> list[dict]:
     log = json.loads((run / "log.json").read_text())
     arm, ug, side = frames(run, log)
-    known = run.parent / "ugreen_dots.json"  # model_jab reads the notebook's dots from --out; the latest set, not the run's own
+    own = run / "ugreen_dots.json"
+    known = own if own.exists() else run.parent / "ugreen_dots.json"  # model_jab reads the notebook's dots from --out: the run's own day's set (saved per run), not the latest
     if known.exists():
         (out / "ugreen_dots.json").write_text(known.read_text())
     state = dict(pose0)
@@ -112,7 +113,7 @@ def replay(run: Path, out: Path, pose0: dict[int, int], extra: list[str]) -> lis
 
 def compare(gold: list[dict], new: list[dict]) -> None:
     """Rows in order of phase; numbers compared field by field; stops at the first phase mismatch."""
-    skip = {"args", "light", "pose0", "dots-filled", "retie-vote"}  # a filled dot is SAM missing one, judged by the rows after it
+    skip = {"args", "light", "pose0", "dots-filled", "retie-vote", "tie-inputs", "tip-cam"}  # a filled dot is SAM missing one, judged by the rows after it; tie-inputs/tip-cam are pure diagnostics (2026-10-30) old recordings lack
     g = [r for r in gold if r["phase"] not in skip]
     n = [r for r in new if r["phase"] not in skip]
     worst: dict[str, float] = {}

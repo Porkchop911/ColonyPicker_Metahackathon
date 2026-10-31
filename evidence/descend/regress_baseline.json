@@ -1,18 +1,22 @@
 {
  "20261029T170928": {
-  "diverged_row": 22,
-  "raised": null
+  "diverged_row": 6,
+  "raised": "RuntimeError"
  },
  "20261029T172244": {
-  "diverged_row": 5,
-  "raised": null
+  "diverged_row": 4,
+  "raised": "RuntimeError"
  },
  "20261029T152609": {
   "diverged_row": 0,
   "raised": "RuntimeError"
  },
  "20261029T171326": {
-  "diverged_row": 6,
+  "diverged_row": 5,
   "raised": null
+ },
+ "20261030T103024": {
+  "diverged_row": 20,
+  "raised": "RuntimeError"
  }
 }

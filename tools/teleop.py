@@ -35,7 +35,7 @@ from tip_descend import POSE_HELP, commanded, go_start, read, send  # noqa: E402
 KEYS = {"a": (1, -1), "d": (1, 1), "t": (2, 1), "g": (2, -1), "w": (3, 1), "s": (3, -1),
         "r": (4, 1), "f": (4, -1), "q": (5, -1), "e": (5, 1)}
 STEPS = {"1": 1, "2": 2, "5": 5, "0": 10}
-SERVOS = [(1, "pan"), (2, "shoulder"), (3, "elbow"), (4, "wrist"), (5, "roll")]  # gripper left out: it holds the needle
+SERVOS = [(1, "pan"), (2, "shoulder"), (3, "elbow"), (4, "wrist"), (5, "roll"), (10, "gripper")]  # gripper for the needle pick-up (plan 2026-10-30 B1)
 PANEL_STEPS = (1, 2, 5, 10, 20)
 PATCH = 10       # template half-size, px, for following the clicked mark
 SEARCH_PX = 60   # how far the mark may move in one step, px
