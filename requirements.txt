@@ -4,6 +4,7 @@ triton-windows; sys_platform == "win32"
 einops
 pycocotools
 numpy<2
+# OpenCV loads and draws images and tracks the needle; SAM 3.1 is what detects the colonies
 opencv-python
 pillow
 huggingface_hub
