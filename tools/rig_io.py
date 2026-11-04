@@ -11,37 +11,127 @@ stdin/stdout). Keep the session: sshd drops rapid reconnects (MaxStartups).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-ROBOT = "ubuntu@192.168.0.223"
+ROBOT = "ubuntu@" + os.environ.get("ROBOT_IP", "<ROBOT_IP>")
 # the robot's platform environment (pre-existing control stack: ROS 2, servo driver) + our bridge
 BRIDGE = "source ~/hwr/deploy/env.zsh; python3 ~/colony/servo_bridge.py"
+EXPOSURE_CACHE = Path("evidence/descend/exposure.json")  # last locked step per camera index (plan 11 S3)
 EXPOSURE_TARGET = 140.0  # scene median the MSMF exposure lock aims for (ruling visible, lamps on)
+OVERHEAD = 1  # 4K UGREEN looking down at the sheet (2026-10-29)
+SIDE = 0      # the old 1080p UGREEN, low beside the sheet: sees the tip height above the paper
+SIDE_PAPER = 185.0  # its exposure lock target for the paper (90th percentile): dots found at 183, lost at 223 (2026-10-29)
+LIVE_DIR = Path(__file__).resolve().parent.parent / 'evidence' / 'tip'  # live_<camera index>.jpg for the demo page
+LIVE_EVERY_S = 0.33
 
 
-class Camera:
+FRAME_SIZE = {OVERHEAD: (2160, 3840), SIDE: (1080, 1920)}  # (h, w), shared frames: two slots after a 16-byte header (seq, time.time())
+
+
+def _shm_name(index: int) -> str:
+    return f"colony_cam_{index}"
+
+
+class SharedCamera:
+    """A camera the demo page holds open: frames from its shared memory, no device open. Each tool opening the USB
+    cameras itself took 20-30 s per open and froze the page's feeds between steps (11-03)."""
+
+    def __init__(self, index: int, shm):
+        self.index, self.shm = index, shm
+        self.hdr = np.ndarray((2,), np.float64, shm.buf, 0)
+        h, w = FRAME_SIZE[index]
+        self.slots = [np.ndarray((h, w, 3), np.uint8, shm.buf, 16 + k * h * w * 3) for k in (0, 1)]
+
+    def frame(self, average: int = 3, settle: float = 0.3) -> np.ndarray:
+        since = time.time() + settle
+        end, got, last = since + 5.0, [], -1.0
+        while time.time() < end:
+            seq, t = float(self.hdr[0]), float(self.hdr[1])
+            if t > since and seq != last:
+                f = self.slots[int(seq) % 2].astype(np.float32)
+                if float(self.hdr[0]) == seq:  # not overwritten while copied (the writer uses the other slot first)
+                    got.append(f)
+                    last = seq
+                    if len(got) >= average:
+                        return np.mean(got, 0).astype(np.uint8)
+            time.sleep(0.005)
+        raise RuntimeError(f"camera {self.index}: the demo page's shared frames stopped")
+
+    def close(self) -> None:
+        del self.hdr, self.slots
+        self.shm.close()
+
+
+def Camera(index: int = OVERHEAD, settle_s: float = 1.0, paper_target: float | None = None, publish: bool = False):
+    """The camera: the demo page's shared frames when it holds the device (publish=True there), else the device."""
+    if not publish:
+        from multiprocessing import shared_memory
+        try:
+            return SharedCamera(index, shared_memory.SharedMemory(name=_shm_name(index)))
+        except FileNotFoundError:
+            pass
+    return DeviceCamera(index, settle_s, paper_target, publish)
+
+
+class DeviceCamera:
     """UGREEN capture with a locked exposure and a draining reader thread."""
 
-    def __init__(self, index: int = 0, settle_s: float = 3.0):
-        self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():  # DirectShow can lose the device after a USB re-enumeration
-            self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"camera {index} does not open (DSHOW or MSMF)")
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        end = time.monotonic() + settle_s
-        while time.monotonic() < end:
-            self.cap.read()
-        self._lock_exposure()
+    def __init__(self, index: int = OVERHEAD, settle_s: float = 1.0, paper_target: float | None = None,
+                 publish: bool = False):
+        """`paper_target`: lock on the frame's 90th percentile (the paper) instead of its median: the side view is
+        half dark desk and box, and a median lock put its paper at 223 of 255, where SAM lost the faint dots."""
+        # the overhead too: on the dark table a median lock burns the paper out (2026-11-03)
+        self.paper_target, self.index = paper_target or (SIDE_PAPER if index == OVERHEAD else None), index
+        h, w = FRAME_SIZE[index]
+        for attempt in range(6):  # a just-released camera once gave empty frames: a pick failed on it (11-03)
+            self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)  # DSHOW: 5 fps at 1080 on the 4K UGREEN, MSMF 30
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            if not self.cap.isOpened():
+                raise RuntimeError(f"camera {index} does not open (DSHOW or MSMF)")
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            # autofocus came up off after a reboot (sharpness 2 vs 370); manual focus values are ignored by this camera
+            self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+            t0 = time.monotonic()
+            ok, _ = self.cap.read()
+            if not ok or time.monotonic() - t0 > 3.0:  # opened right after another process closed it: every read then
+                self.cap.release()                      # waits a 10 s timeout and the exposure lock took ~100 s (11-03)
+                time.sleep(2.0)
+                continue
+            end = time.monotonic() + settle_s
+            while time.monotonic() < end:
+                self.cap.read()
+            try:
+                self._lock_exposure()
+                break
+            except cv2.error:
+                self.cap.release()
+                time.sleep(1.5)
+        else:
+            raise RuntimeError(f"camera {index} delivers no frames")
         self.cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+        self.shm = None
+        if publish:
+            from multiprocessing import shared_memory
+            size = 16 + 2 * h * w * 3
+            try:
+                self.shm = shared_memory.SharedMemory(name=_shm_name(index), create=True, size=size)
+            except FileExistsError:
+                self.shm = shared_memory.SharedMemory(name=_shm_name(index))
+            self._hdr = np.ndarray((2,), np.float64, self.shm.buf, 0)
+            self._slots = [np.ndarray((h, w, 3), np.uint8, self.shm.buf, 16 + k * h * w * 3) for k in (0, 1)]
+            self._hdr[:] = 0
         self._frames: list[tuple[float, np.ndarray]] = []
+        self._open = True
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _lock_exposure(self) -> None:
@@ -49,22 +139,55 @@ class Camera:
             value = self.cap.get(cv2.CAP_PROP_EXPOSURE)  # DSHOW reports the auto value truthfully
         else:
             # MSMF always reports -6; pick the manual step by the brightness it actually gives
-            scores = []
-            for step in range(-3, -11, -1):
+            target = self.paper_target or EXPOSURE_TARGET
+
+            def miss(step: int) -> float:
                 self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
                 self.cap.set(cv2.CAP_PROP_EXPOSURE, step)
-                for _ in range(4):
+                for _ in range(8):  # the 4K UGREEN lags ~4 frames behind an exposure change
                     ok, img = self.cap.read()
-                scores.append((abs(np.median(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)) - EXPOSURE_TARGET), step))
-            value = min(scores)[1]
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                return abs((np.percentile(gray, 90) if self.paper_target else np.median(gray)) - target)
+            cache = json.loads(EXPOSURE_CACHE.read_text()) if EXPOSURE_CACHE.exists() else {}
+            cached = cache.get(str(self.index))
+            if cached is not None and miss(cached) <= 25.0:  # the lamps are the same as last time: one step, not 8
+                value = cached
+            else:
+                value = min((miss(step), step) for step in range(-3, -11, -1))[1]
+                cache[str(self.index)] = value
+                try:
+                    EXPOSURE_CACHE.write_text(json.dumps(cache))
+                except OSError:  # a cache only
+                    pass
         self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
         self.cap.set(cv2.CAP_PROP_EXPOSURE, value)
 
+    def close(self) -> None:
+        """Release the device (another process can open it then)."""
+        self._open = False
+        time.sleep(0.2)  # let the reader leave its read()
+        self.cap.release()
+
     def _reader(self) -> None:
-        while True:
+        last_live = 0.0
+        while self._open:
             ok, img = self.cap.read()
             if ok:
                 self._frames = (self._frames + [(time.monotonic(), img)])[-8:]
+                if self.shm is not None and img.shape[:2] == FRAME_SIZE[self.index]:
+                    seq = self._hdr[0] + 1
+                    self._slots[int(seq) % 2][:] = img
+                    self._hdr[1] = time.time()
+                    self._hdr[0] = seq
+                if time.monotonic() - last_live > LIVE_EVERY_S:  # the demo page's camera view (one opener per camera)
+                    last_live = time.monotonic()
+                    try:
+                        small = cv2.resize(img, (960, int(960 * img.shape[0] / img.shape[1])))
+                        tmp = LIVE_DIR / f'live_{self.index}.tmp.jpg'
+                        cv2.imwrite(str(tmp), small, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        tmp.replace(LIVE_DIR / f'live_{self.index}.jpg')
+                    except (OSError, cv2.error):
+                        pass
 
     def frame(self, average: int = 3, settle: float = 0.3) -> np.ndarray:
         """Mean of `average` frames captured at least `settle` s after the call."""
@@ -108,11 +231,33 @@ def reset_bridge() -> None:
         _bridge = None
 
 
+# joint id -> bus servo id. Servo 2 died 2026-11-01; servo 5 (the old roll) now drives the shoulder, and the roll
+# joint is gone. Everything above this layer keeps calling the shoulder 2.
+PHYSICAL = {2: 5, 5: 2}
+
+
+def _phys(i) -> str:
+    return str(PHYSICAL.get(int(i), int(i)))
+
+
 def servo(*commands: dict) -> list[dict]:
     """Send bridge commands ({"set": {id: pulse}, "ms": n}, {"read": true}, {"snap": true}) in
-    order over the one session; raises on any error reply. Thread-safe."""
+    order over the one session; raises on any error reply. Thread-safe. Ids are joint ids (PHYSICAL)."""
+    out = []
+    for c in commands:
+        c = dict(c)
+        for key in ("set", "torque"):
+            if key in c:
+                c[key] = {_phys(k): v for k, v in c[key].items()}
+        if "raw" in c and len(c["raw"]) >= 2:
+            c["raw"] = [c["raw"][0], int(_phys(c["raw"][1])), *c["raw"][2:]]
+        out.append(c)
     with _lock:
-        return _servo(*commands)
+        replies = _servo(*out)
+    for r in replies:
+        if "pulses" in r:
+            r["pulses"] = {_phys(k): v for k, v in r["pulses"].items()}
+    return replies
 
 
 def _servo(*commands: dict) -> list[dict]:

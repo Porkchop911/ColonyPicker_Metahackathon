@@ -1,0 +1,18 @@
+{
+ "sheet_xy_mm": [
+  97.55,
+  -1.92
+ ],
+ "plate_top_mm": 16.3,
+ "cell": [
+  11,
+  0
+ ],
+ "source": "live plate pose chained to the sheet, cell ray",
+ "plate_top_plane_pt": [
+  -1.41,
+  -0.11,
+  -16.28
+ ],
+ "time": "20261101T155640"
+}

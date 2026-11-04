@@ -110,7 +110,7 @@ def main() -> None:
     # servo 2 from a fixed value, never re-sent read-back (it reads ~5 low and sinks): pass --start
     start = dict(zip(SERVOS, args.start)) if args.start else {j: rb[j] for j in SERVOS}
 
-    ug = Camera(0)
+    ug = Camera()
     rig = tt.ugreen_rig(ug.frame())
     uk, ud, ur, ut = (np.array(rig[q]) for q in ("k", "d", "r", "t"))
 

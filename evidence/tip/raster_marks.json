@@ -1,0 +1,23 @@
+[
+ {
+  "well": "D5",
+  "pose_cmd": {
+   "1": 601,
+   "2": 210,
+   "3": 189,
+   "4": 738
+  },
+  "readback": {
+   "1": 601,
+   "2": 211,
+   "3": 192,
+   "4": 739,
+   "5": 497,
+   "10": 518
+  },
+  "when": "2026-11-01T18:10:15",
+  "photo_top": "evidence/tip/well2_20261101T180914_verifyD5_bg000.raw.top.jpg",
+  "photo_side": "evidence/tip/well2_20261101T180914_verifyD5_bg000.raw.side.jpg",
+  "note": "needle deep inside D5, user-confirmed + overhead cam visual"
+ }
+]

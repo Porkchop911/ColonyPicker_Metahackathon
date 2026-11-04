@@ -6,19 +6,22 @@
     python tools/hue.py set 3 on --bri 254 --ct 250
     python tools/hue.py set 3 off
 
-Bridge: 192.168.0.70 (BSB002, found by its ec:b5:fa MAC in the ARP table, 2026-10-26). The app key
+Bridge: <HUE_BRIDGE_IP> (Hue bridge, found by its vendor MAC in the ARP table, 2026-10-26). The app key
 lives in config/hue.local.json, kept out of git (.gitignore).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.request
 from pathlib import Path
 
-BRIDGE = "192.168.0.70"
+BRIDGE = os.environ.get("HUE_BRIDGE_IP", "<HUE_BRIDGE_IP>")
 KEY_FILE = Path(__file__).resolve().parent.parent / "config" / "hue.local.json"
+if not KEY_FILE.exists() and ".claude" in KEY_FILE.parts:  # a .claude/worktrees/<name> checkout: the main checkout's key
+    KEY_FILE = Path(*KEY_FILE.parts[:KEY_FILE.parts.index(".claude")]) / "config" / "hue.local.json"
 
 
 def _call(method: str, path: str, body: dict | None = None):

@@ -44,7 +44,7 @@ MAX_MISS_MM = 3.0
 RIG = Path("evidence/tip/ugreen_rig.json")
 # the UGREEN's lens is hardware: calibrated once (the ruler-confirmed daylight frame) and reused, so a
 # moved UGREEN only re-solves its pose. Single-view self-calibration drifted f by ~1 % per view.
-LENS = Path("evidence/tip/ugreen_lens.json")
+LENS = Path("evidence/tip/ugreen4k_lens.json")  # the 4K overhead since 2026-10-29; ugreen_lens.json is the old 1080p, now the side camera
 
 
 def ray(px, k, d, r, t) -> tuple[np.ndarray, np.ndarray]:
@@ -68,6 +68,96 @@ def meet(a: tuple, b: tuple) -> tuple[np.ndarray, float]:
     den = p * r - q * q
     m1, m2 = c1 + (q * u - r * s) / den * d1, c2 + (p * u - q * s) / den * d2
     return (m1 + m2) / 2, float(np.linalg.norm(m1 - m2))
+
+
+SIDE_LENS = Path("evidence/tip/ugreen_lens.json")  # the old 1080p UGREEN's ruler-checked lens: the side camera since 2026-10-29
+
+
+def side_marks(img: np.ndarray, detect, path: Path) -> np.ndarray:
+    """Dot-sized marks in a side-camera frame for side_rig: SAM 3.1 "dot" (`detect(path, prompt, threshold)`) on a
+    crop of the paper, where it finds the far dots (on the whole frame, shrunk ~2x, it missed 4 of 7); hole-sized
+    marks left out, teal ink (a touched dot) kept."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, lab, st, _ = cv2.connectedComponentsWithStats((gray > 0.8 * np.percentile(gray, 90)).astype(np.uint8))
+    j = 1 + int(np.argmax(st[1:, 4]))
+    x0, y0, w0, h0 = st[j, :4]
+    marks: list[np.ndarray] = []
+    nx, ny = max(1, round(w0 / 900)), max(1, round(h0 / 600))  # tiles of ~900 x 600: when the paper fills the frame
+    for i in range(nx):  # (camera moved closer, 2026-10-29) one crop is the whole frame and SAM misses the far dots again
+        for k_ in range(ny):
+            tx0, tx1 = x0 + i * w0 // nx - (30 if i else 0), x0 + (i + 1) * w0 // nx + (30 if i < nx - 1 else 0)
+            ty0, ty1 = y0 + k_ * h0 // ny - (30 if k_ else 0), y0 + (k_ + 1) * h0 // ny + (30 if k_ < ny - 1 else 0)
+            crop = img[ty0:ty1, tx0:tx1]
+            cv2.imwrite(str(path), crop)
+            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+            for d in detect(str(path), "dot", 0.2):
+                if d["centroid"] is None or not (d["area"] <= 120 or d["area"] <= 200
+                                                 and 70 <= np.median(hsv[..., 0][d["mask"]]) <= 100):
+                    continue
+                q = np.add(d["centroid"], (tx0, ty0))
+                if all(np.linalg.norm(q - m) > 6 for m in marks):  # tiles overlap by 60 px
+                    marks.append(q)
+    return np.array(marks, float).reshape(-1, 2)
+
+
+def side_rig(side_px: np.ndarray, sheet_mm: np.ndarray, near_px: float = 12.0, min_dots: int = 5) -> dict:
+    """The side camera's pose in the overhead's sheet frame from marks it sees (`side_px`) and dots the overhead
+    placed (`sheet_mm`, on the paper). Its grid numbering slips at that slant and the dots' colours do not separate
+    there, so every 4-point correspondence is tried and the pose most marks agree with (to `near_px`: the lens fits
+    them to ~10 px at that slant) is kept and refined on them. f stays the ruler-checked 1148: freed, 6 dots moved it
+    to 1056 or 1262; fixed, dots triangulate onto the paper within -1.1..+0.8 mm and the height matched the tape
+    (2026-10-29)."""
+    import itertools
+    lens = json.loads(SIDE_LENS.read_text())
+    k, d = np.array(lens["k"]), np.array(lens["d"])
+    obj = np.column_stack([sheet_mm, np.zeros(len(sheet_mm))]).astype(np.float64)
+
+    def assigned(proj: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """One-to-one dot assignment (each mark serves at most one dot: two dots sharing one mark inflated the
+        count) by nearest-first greedy pairing; (gap per dot in assignment order, chosen mark per dot, -1 none)."""
+        gap = np.linalg.norm(proj[:, None] - side_px[None], axis=2)
+        order = np.dstack(np.unravel_index(np.argsort(gap, axis=None), gap.shape))[0]
+        pick, used = np.full(len(obj), -1), set()
+        for i, j in order:
+            if pick[i] < 0 and j not in used and gap[i, j] <= near_px:
+                pick[i], _ = j, used.add(j)
+        return gap, pick
+
+    cands: list[tuple[int, float, np.ndarray, np.ndarray]] = []  # (dots, rms, rvec, tvec) per tried pose
+    for sel in itertools.combinations(range(len(side_px)), 4):
+        img = side_px[list(sel)].astype(np.float64)
+        for perm in itertools.permutations(range(len(obj)), 4):
+            ok, r, t = cv2.solvePnP(obj[list(perm)], img, k, d, flags=cv2.SOLVEPNP_SQPNP)
+            if not ok or (cv2.Rodrigues(r)[0] @ obj[list(perm)].T + t)[2].min() <= 0:
+                continue  # the dots must lie in front of the camera
+            proj = cv2.projectPoints(obj, r, t, k, d)[0][:, 0]
+            gap, pick = assigned(proj)
+            rows = [(i, pick[i]) for i in range(len(obj)) if pick[i] >= 0]
+            n = len(rows)
+            rms = float(np.sqrt(np.mean([gap[i, j] ** 2 for i, j in rows]))) if rows else np.inf
+            cands.append((n, rms, r, t))
+    cands.sort(key=lambda c: (c[0], -c[1]), reverse=True)
+    n, rms, r, t = cands[0] if cands else (0, np.inf, None, None)
+    # the runner-up: the best pose that disagrees — how ambiguous this tie is. A winner with no distinct
+    # runner-up (every near pose the same pose refined) is a clean tie; a runner-up within one dot is not.
+    runner = next(((c[0], c[1]) for c in cands[1:] if np.linalg.norm(cv2.Rodrigues(c[2])[0] - cv2.Rodrigues(r)[0]) > 0.02
+                   or np.linalg.norm(c[3].ravel() - t.ravel()) > 5.0), None) if r is not None else None
+    if n < min_dots:
+        raise RuntimeError(f"side camera: only {n} dots agree on a pose")
+    proj = cv2.projectPoints(obj, r, t, k, d)[0][:, 0]  # refined on every agreeing dot
+    gap, pick = assigned(proj)
+    use = pick >= 0
+    flags = (cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_PRINCIPAL_POINT | cv2.CALIB_FIX_ASPECT_RATIO
+             | cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3 | cv2.CALIB_FIX_FOCAL_LENGTH)
+    rms, k, d, rs, ts = cv2.calibrateCamera([obj[use].astype(np.float32)],
+                                            [side_px[pick[use]].astype(np.float32)],
+                                            (1920, 1080), k, d, flags=flags)
+    centre = -cv2.Rodrigues(np.array(rs[0]))[0].T @ np.array(ts[0]).ravel()  # sanity: centre_mm[2] should read ~143 mm
+    axis = cv2.Rodrigues(np.array(rs[0]))[0].T @ np.array([0.0, 0.0, 1.0])  # the optical axis in sheet coords
+    return {"k": k.tolist(), "d": d.ravel().tolist(), "r": rs[0].ravel().tolist(), "t": ts[0].ravel().tolist(),
+            "dots": n, "rms": float(rms),
+            "centre_mm": [float(v) for v in centre], "tilt_deg": float(np.degrees(np.arcsin(np.clip(-axis[2], -1, 1)))),
+            "runner_up": None if runner is None else {"dots": int(runner[0]), "rms": float(runner[1])}}
 
 
 def _on_ruled_sheet(points: np.ndarray, crossings: np.ndarray) -> np.ndarray:
@@ -353,7 +443,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=None, help="keep frames + JSON here")
     ap.add_argument("--recalibrate", action="store_true", help="redo the UGREEN rig (camera or sheet moved)")
     args = ap.parse_args()
-    ug = Camera(0).frame()
+    ug = Camera().frame()
     if args.recalibrate or not RIG.exists():
         rig = ugreen_rig(ug)
         RIG.parent.mkdir(parents=True, exist_ok=True)

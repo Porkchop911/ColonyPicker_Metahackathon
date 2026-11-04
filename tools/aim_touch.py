@@ -219,7 +219,7 @@ def main() -> None:
             cv2.imwrite(str(out / "contact_arm.png"), r["img"])
         if reason == "hover":  # second view: tip vs dot on the sheet, compared offline (Step 3)
             try:
-                cv2.imwrite(str(out / "hover_ugreen.jpg"), (ug.get("cam") or Camera(0)).frame())
+                cv2.imwrite(str(out / "hover_ugreen.jpg"), (ug.get("cam") or Camera()).frame())
             except Exception as error:  # noqa: BLE001 - the dry run still counts without the second view
                 note(phase="ugreen-failed", error=repr(error))
         lift(reason)
@@ -314,7 +314,7 @@ def ugreen_view(note, out: Path) -> dict:
     target dot is paired once the arm camera has the tip within PAIR_MM of it: the nearest black dot
     to the tip's point on the sheet."""
     try:
-        cam = Camera(0)
+        cam = Camera()
         first = cam.frame()
         rig = tt.ugreen_rig(first)
     except Exception as error:  # noqa: BLE001 - no second view: the arm camera alone, as before

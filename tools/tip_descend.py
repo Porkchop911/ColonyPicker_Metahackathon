@@ -42,6 +42,7 @@ LIFT = {2: 40}  # shoulder +40 pulses raises the arm (live: 361 -> 416 lifted th
 
 
 SERVOS = (1, 2, 3, 4, 5, 10)
+WRIST_FLOOR = None  # hard limit, user order 2026-11-01 (lifted 2026-11-01 after live tip proof)
 START = (497, 423, 235, 269, 502, 662)  # handover start pose for SERVOS; gripper 662 holds the needle
 POSE_HELP = f"pose to start from (the tool drives there first), servos {SERVOS} (default: the start pose {START})"
 _sent: dict = {}  # what this process last commanded, per servo
@@ -66,6 +67,9 @@ def commanded(start=None) -> dict:
 
 
 def send(target: dict, ms: int) -> None:
+    if WRIST_FLOOR is not None and int(target.get(4, WRIST_FLOOR)) < WRIST_FLOOR:
+        raise RuntimeError(f"refused: wrist {target.get(4)} < floor {WRIST_FLOOR}")
+    _sent.update({int(k): int(v) for k, v in target.items()})
     _sent.update({int(k): int(v) for k, v in target.items()})
     servo({"set": {str(k): int(v) for k, v in target.items()}, "ms": ms})
 
@@ -140,7 +144,7 @@ def main() -> None:
 
     rig = json.loads(tt.RIG.read_text())
     # this grasp's tip offset, from one full two-camera triangulation
-    cam = Camera(0)
+    cam = Camera()
     first = tt.measure(cam.frame(), tt.snap_arm(), rig, tuple(args.near))
     fresh = np.array(first["tip_arm_cam_mm"])
     tip_cam = np.array(args.tip_cam) if args.tip_cam else fresh

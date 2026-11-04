@@ -1,69 +1,107 @@
-# ColonyPicker — Meta hackathon
+# ColonyPicker
 
-A Hiwonder ROSOrin Pro (mecanum base, 5-DoF arm, eye-in-hand RGB-D camera) turned into a microbial
-colony picker: find single colonies on a sourdough-starter plate, light them three ways, guide a
-steel needle onto each one with two cameras, and photograph the plate to confirm the pick.
+A robot arm with a steel needle picks microbial colonies from an agar dish, on its own. **Meta SAM 3.1** finds the colonies on a live
+overhead camera image. The arm then moves the needle into a colony, into its own sample well, into a disinfectant well and into a
+rinse well, while a browser page shows each step. SAM 3.1 is the only AI model the project calls at runtime.
 
-## Pre-existing vs. built during the event
+> Agents and new contributors: read `CLAUDE.md` first. The arm is real, and its safety rules there are not optional.
 
-**Pre-existing (not in this repo):** the robot's own control stack — ROS 2 servo/motor driver,
-camera driver, HTTP gateway (`/drive`), environment script — written before the event, used here as
-the platform this code runs on. Also an earlier needle-touch prototype and a colony-picker step-test
-plan (2026-10-24); their lessons are cited in comments, their code is not included.
-Exception, vendored unchanged: the arm's URDF (`robot/hwr.urdf`) and its FK/IK
-(`tools/hwr_kinematics.py`, from `hwr_core/arm/kinematics.py`), used by `tools/coarse_aim.py`.
+## A hardware project
 
-**Built during the event (everything else in this repo):** camera calibration on the 5 mm grid sheet,
-two-camera and robot-motion triangulation of the needle tip, closed-loop strafing, Hue lighting
-control, SAM 3.1 detection, the dot-servo descent, the PC/robot I/O (`tools/rig_io.py`,
-`robot/servo_bridge.py`), plan and evidence.
+This is real robotics, so the full demo depends on physical hardware: this robot arm, its needle, two fixed cameras, the lamps and the exact position of the plate.
+Its calibration belongs to that one setup and can't be reproduced remotely. A judge without the rig can run the SAM 3.1 detection on a dish photo and the offline checks below.
+The working system is shown in the demo video.
 
-**Open-source dependencies:** SAM 3.1 (Meta, `facebookresearch/sam3`, `facebook/sam3.1` weights),
-PyTorch, OpenCV, NumPy, Philips Hue local API.
+## What it does
 
-## Rig
+1. **Detect.** The 4K overhead photo of the dish goes to SAM 3.1 with a text prompt. Three detection settings appear on the page, and the operator picks one.
+2. **Pick.** Two fixed cameras watch the needle tip. The arm aligns the tip over the chosen colony, then goes straight down into it.
+3. **Transfer.** The needle enters that colony's sample well (C10, C11, C12), then A12 to disinfect for 5 s, then A10 to rinse for 2 s.
+4. **Repeat** for the next colony. A failed pick lifts the needle and retries up to 3 times.
 
-| Part | Role |
+| Meta model | Where it runs | What it does |
+|---|---|---|
+| SAM 3.1 (`facebookresearch/sam3`, `facebook/sam3.1` weights) | Locally on the PC GPU (RTX 3090), kept loaded by `tools/sam_server.py` | Finds the dish and each colony, with a confidence score |
+
+Everything else is classic code, with no other AI model: OpenCV image processing, NumPy, arm kinematics and a Hue lamp API.
+The tip tracking is image differencing, not a learned model.
+
+## Results
+
+| | |
 |---|---|
-| Arm camera (Deptrum Aurora 930, 640x400, fixed focus) | eye-in-hand: tip pixel, target dot, its own pose from the grid |
-| UGREEN 1080p webcam on the PC | fixed second view: tip ray, sheet calibration |
-| 5 mm grid notebook sheet | calibration target for both cameras (no printed markers needed) |
-| Hue Play bars (lights 12, 13) | top/side light; set before opening the UGREEN (exposure locks at open) |
-| Steel needle in the gripper | the picking tool; position varies per grasp, so it is measured, not assumed |
-| RTX 3090 on the PC | SAM 3.1 (~0.3-0.9 s per 1080p image) |
+| Full loop from the page | 3 colonies -> 3 sample wells -> disinfect -> rinse, about 10 minutes |
+| Wells | 5 used wells entered 3 of 3 shuffled passes, checked by photo |
+| SAM | Dish found with score 0.93-0.98. On dense plates, 113-181 colonies ringed per dish, not every colony |
 
-## Tools
+**Known limits.** The last drop still scatters by about 1-2 mm, so colonies of 3-4 mm are hit reliably and 2 mm colonies give a mix of hits, edge hits and misses.
+Well positions are calibrated to one physical setup and must be redone if the plate, robot or cameras move. The arm reaches columns 7-12 of the plate from this position. Details:
+[docs/colony_demo_writeup_2026-11-04.md](docs/colony_demo_writeup_2026-11-04.md).
 
-| File | What |
-|---|---|
-| `tools/rig_io.py` | UGREEN capture (locked exposure, draining reader; DSHOW with MSMF fallback) and the SSH client for the servo bridge |
-| `robot/servo_bridge.py` | robot side: `set` / `read` / `snap` as JSON lines; refuses camera frames older than 1 s |
-| `tools/paper_grid.py` | 5 mm ruling -> numbered crossings -> camera intrinsics/pose in the sheet frame |
-| `tools/tip_triangulate.py` | tip in 3D from both cameras; arm/UGREEN tip detection; stale-frame-proof arm snapshots |
-| `tools/tip_motion.py` | tip in 3D from robot strafes (UGREEN rays + arm-measured motion incl. yaw); always returns to the start |
-| `tools/coarse_aim.py` | fast first move: target in sheet mm -> pulses via the URDF arm model, tip 15 mm above it; measures the real miss |
-| `tools/hwr_kinematics.py`, `robot/hwr.urdf` | arm FK/IK and URDF, vendored unchanged from the robot stack (see below) |
-| `tools/tip_descend.py` | closed-loop descent onto a dot from measured tip positions |
-| `tools/dot_servo.py` | lock a dot in the arm camera, close in, UGREEN height readouts (in progress) |
-| `tools/sam_detect.py`, `tools/sam_live.py` | SAM 3.1 text-prompted segmentation, one image / live UGREEN stream |
-| `tools/hue.py` | Hue bridge pairing and lamp control (local API) |
-| `tools/arm_view.py` | live arm-camera window |
+## Run it
 
-## Results so far (2026-10-26, see `docs/plan.md` and `evidence/`)
+### SAM 3.1 only, no robot
 
-- Tip height by two-camera triangulation: 75.2 mm, ruler ~7.5 cm; repeats within 0.25 mm.
-- UGREEN calibration checked on an upright tape: 20-80 mm marks land within ~1 mm.
-- Strafe triangulation with per-frame yaw: 57-59 mm vs tape ~56 mm (pure translation gave 63.4).
-- Found and fixed: arm-camera USB drop-outs (hub), stale frames passed off as fresh, lamps blinding
-  the arm camera.
+This needs a GPU and access to the gated `facebook/sam3.1` weights on Hugging Face, and works on any photo of a dish.
 
-## Setup
-
-```
+```bash
 uv venv .venv --python 3.12
 uv pip install --python .venv/Scripts/python.exe torch torchvision --index-url https://download.pytorch.org/whl/cu128
 uv pip install --python .venv/Scripts/python.exe -r requirements.txt
-hf auth login                      # facebook/sam3.1 is gated
-scp robot/servo_bridge.py ubuntu@<robot>:colony/servo_bridge.py
-python tools/hue.py pair           # press the bridge link button first
+hf auth login
+.venv/Scripts/python tools/colony_detect.py YOUR_DISH_PHOTO.jpg --out overlay.jpg
 ```
+
+### Offline checks, no robot
+
+There is no full physics or visual simulation of the rig. These run without hardware:
+
+```bash
+python tools/aim_sim.py --runs 5                       # simulated servos with backlash, for an earlier placing method
+python tools/well_tour.py A12 C10 A10 --blind --dry    # prints the joint commands of a well tour, nothing moves
+```
+
+### Full demo, with the rig
+
+This needs the hardware below, calibrated: a Hiwonder ROSOrin Pro with a needle on its arm, a 4K overhead and a 1080p side webcam, two Philips Hue lamps,
+a 96-well plate and a 55 mm dish. Stored poses only fit the original setup, so another rig must be recalibrated first. [docs/RIG.md](docs/RIG.md) has the hardware and environment setup,
+and [docs/new_layout_2026-11-04.md](docs/new_layout_2026-11-04.md) the calibration.
+
+```bash
+# set HUE_BRIDGE_IP and ROBOT_IP to your own addresses first
+python tools/hue.py pair                                   # press the Hue bridge link button first
+scp robot/servo_bridge.py ubuntu@ROBOT_IP:colony/servo_bridge.py
+.venv/Scripts/python -u tools/sam_server.py                # keeps SAM 3.1 loaded
+start_demo.bat                                             # opens http://127.0.0.1:8765
+```
+
+On the page: enter the agar height, press **Dry run**, then **Run demo**, and choose a detection setting. **Record on / off** films the page and cameras.
+Edit `start_demo.bat` to point at your own Python. Read the safety rules in `CLAUDE.md` before moving the arm.
+
+## Repo map
+
+| Path | What |
+|---|---|
+| `tools/colony_detect.py`, `tools/sam_detect.py`, `tools/sam_server.py` | SAM 3.1 detection, and the process that keeps it loaded |
+| `tools/colony_cycle.py`, `tools/colony_pick.py`, `tools/well_tour.py` | The full cycle, one pick, and the well moves |
+| `tools/demo_server.py` | The demo page |
+| `tools/plate_rig.py`, `tools/a1lib.py`, `tools/well_reach.py`, `tools/rig_io.py` | Camera and plate geometry, arm model, safe moves, robot and camera I/O |
+| `robot/` | The bridge that runs on the robot, and the arm URDF |
+| `docs/` | Write-ups, newest dated file first. Older files are history |
+| `evidence/tip/` | Calibration and state files for this rig |
+
+## Pre-existing vs. built during the event
+
+**Pre-existing (not in this repo):** the robot's own control stack — ROS 2 servo/motor driver, camera
+driver, HTTP gateway (`/drive`), environment script. Also an earlier needle-touch prototype and a
+colony-picker step-test plan (2026-10-24); their lessons are cited in comments, their code is not here.
+Vendored unchanged: the arm URDF (`robot/hwr.urdf`) and its FK/IK (`tools/hwr_kinematics.py`).
+
+**Built during the event (everything else):** camera calibration on the 5 mm ruling, two-camera and
+robot-motion triangulation of the needle tip, closed-loop strafing, Hue lighting control, SAM 3.1
+detection, the descent/dotting pipeline, the PC↔robot JSON-lines bridge (`robot/servo_bridge.py` +
+`tools/rig_io.py`), the arm-model calibration (`tools/arm_calibrate.py`), the demo dashboard, the
+offline regression harness, and `docs/` + `evidence/`.
+
+**Open-source dependencies:** SAM 3.1 (Meta, `facebookresearch/sam3`, gated `facebook/sam3.1` weights),
+PyTorch, OpenCV, NumPy, Philips Hue local API.

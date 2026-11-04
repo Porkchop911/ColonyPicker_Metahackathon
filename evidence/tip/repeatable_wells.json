@@ -1,0 +1,24 @@
+{
+ "wells": [
+  "A10",
+  "A12",
+  "C10",
+  "C11",
+  "C12"
+ ],
+ "how": "tools/well_tour.py WELLS --blind (preload is automatic), poses evidence/tip/well_poses.json (frozen copy well_poses.frozen12_1104.json)",
+ "evidence": "3 of 3 shuffled passes, 2026-11-04 01:5x-02:22, photos evidence/tip/f{1,2,3}_{a,b}.jpg read by eye; same spot each pass, about 2 mm up-left of well centre, inside the rim",
+ "valid_for": "this layout only: robot base, plate, overhead and side cameras not moved since; room light off, lamps.json [170,153]",
+ "recalibrated_1104_12": {
+  "wells": [
+   "A10",
+   "A12",
+   "C10",
+   "C11",
+   "C12"
+  ],
+  "evidence": "3 of 3 shuffled passes after the plate moved 2026-11-04 ~12:07, photos evidence/tip/v{1,2,3}.jpg; poses well_poses.frozen5_1104.json; no plate movement measured across the passes",
+  "others": "the other 7 wells of the list were not recalibrated after the plate moved: do not use them"
+ },
+ "note": "only these five after the plate moved 2026-11-04 ~12:07; see recalibrated_1104_12"
+}

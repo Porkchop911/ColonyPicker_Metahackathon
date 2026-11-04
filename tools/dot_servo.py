@@ -136,7 +136,7 @@ def main() -> None:
         print({k: (np.round(v, 2).tolist() if isinstance(v, (np.ndarray, list, tuple)) else (round(v, 2) if isinstance(v, float) else v))
                for k, v in row.items()}, flush=True)
 
-    cam = Camera(0)
+    cam = Camera()
     rig = tt.ugreen_rig(cam.frame())
     sensor = Sensor(cam, rig, args.near, out)
 

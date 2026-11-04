@@ -1,0 +1,33 @@
+[
+ {
+  "t": 1793186762.27,
+  "phase": "light",
+  "lamps": [
+   254,
+   0
+  ]
+ },
+ {
+  "t": 1793186791.56,
+  "phase": "tip-depth-failed",
+  "how": "cube",
+  "error": "UGREEN: nothing long and thin moved on the sheet"
+ },
+ {
+  "t": 1793186815.55,
+  "phase": "abort",
+  "error": "RuntimeError('SAM 3.1 found 2 black dots on the notebook in the UGREEN, expected 3')"
+ },
+ {
+  "t": 1793186817.79,
+  "phase": "lift",
+  "readback": {
+   "1": 499,
+   "2": 421,
+   "3": 171,
+   "4": 266,
+   "5": 502,
+   "10": 654
+  }
+ }
+]

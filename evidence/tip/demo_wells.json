@@ -1,0 +1,10 @@
+{
+ "disinfect": "A12",
+ "rinse": "A10",
+ "targets": [
+  "C10",
+  "C11",
+  "C12"
+ ],
+ "why": "user 11-04: from the 12 repeatable wells (docs/new_layout_2026-11-04.md), shown 10 rounds live"
+}

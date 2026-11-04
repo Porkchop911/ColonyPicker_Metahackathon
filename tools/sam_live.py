@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live SAM 3.1 on the UGREEN stream: type a text prompt, watch the masks.
 
-    .venv/Scripts/python tools/sam_live.py ["black dot"]
+    .venv/Scripts/python tools/sam_live.py ["black dot"] [camera index, default 0 = UGREEN]
 
 Console: type a new prompt + Enter to switch; "t 0.3" sets the score threshold.
 Window: s = save frame + overlay to evidence/sam_live/, q = quit.
@@ -20,7 +20,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sam_detect  # noqa: E402
-from rig_io import Camera  # noqa: E402
+from rig_io import OVERHEAD, Camera  # noqa: E402
 
 OUT = Path("evidence/sam_live")
 COLOURS = [(255, 64, 64), (64, 255, 64), (64, 64, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
@@ -41,7 +41,7 @@ def main() -> None:
     threading.Thread(target=console, daemon=True).start()
     print("loading SAM 3.1 ...", flush=True)
     predictor = sam_detect.load()
-    camera = Camera(0)
+    camera = Camera(int(sys.argv[2]) if len(sys.argv) > 2 else OVERHEAD)
     print(f"ready. prompt '{state['prompt']}' - type a new one + Enter, 't 0.3' for threshold", flush=True)
     while True:
         frame = camera.frame(average=1, settle=0.0)
@@ -61,7 +61,7 @@ def main() -> None:
                     cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 4)
         cv2.putText(overlay, f"'{prompt}'  {len(found)} found  thr {threshold}  {dt:.2f} s", (12, 36),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2)
-        cv2.imshow("SAM 3.1 live (UGREEN)", cv2.resize(overlay, (1280, 720)))
+        cv2.imshow("SAM 3.1 live", cv2.resize(overlay, (1280, 720)))
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break

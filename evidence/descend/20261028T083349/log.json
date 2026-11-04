@@ -1,0 +1,27 @@
+[
+ {
+  "t": 1793172850.59,
+  "phase": "light",
+  "lamps": [
+   0,
+   254
+  ]
+ },
+ {
+  "t": 1793172881.38,
+  "phase": "abort",
+  "error": "RuntimeError('paper grid: no seed numbered enough crossings')"
+ },
+ {
+  "t": 1793172883.61,
+  "phase": "lift",
+  "readback": {
+   "1": 497,
+   "2": 420,
+   "3": 180,
+   "4": 269,
+   "5": 503,
+   "10": 655
+  }
+ }
+]

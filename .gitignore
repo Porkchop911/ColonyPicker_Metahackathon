@@ -1,3 +1,22 @@
 .venv/
 __pycache__/
 config/hue.local.json
+evidence/descend/stop.flag
+evidence/descend/side_aim_*.png
+evidence/descend/lamps.json
+evidence/descend/exposure.json
+evidence/markers_a4.png
+evidence/descend/preflight.txt
+evidence/descend/tip_cam.json
+evidence/tip/arm.lock
+evidence/tip/live_*.jpg
+evidence/tip/demo_state.json
+evidence/tip/stop_demo
+evidence/tip/agar_mm.txt
+evidence/tip/sam_ready
+evidence/tip/sam_request
+evidence/tip/wells_used.json
+evidence/tip/rec_stop
+evidence/tip/*.mp4
+evidence/tip/phone recordings/
+evidence/tip/agar_mm.txt

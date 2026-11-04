@@ -1,0 +1,11 @@
+{
+ "date": "2026-10-31",
+ "mount": "needle remounted by the user, away from the gripper, straight down; teal marker bands",
+ "vertical": "needle vertical in the side view when shoulder + elbow + wrist = 1157 (0.2 deg per pulse of the sum; at 1077 it leans ~17 deg with the tip toward the robot)",
+ "pose_seen": {"cmd": {"1": 595, "2": 358, "3": 209, "4": 590},
+               "tip_px": {"top": [1493, 263], "side": [1188, 313]},
+               "tip_sheet_mm": [54.4, -19.5, -86.3], "rays_miss_mm": 1.7,
+               "note": "~71 mm over the rim, over ~F6/F7; the overhead shows it past the A edge (parallax at 45 deg)"},
+ "commanded_now": {"1": 595, "2": 358, "3": 209, "4": 590},
+ "caution": "start every scripted move from the last commanded pose, not the read-back: the shoulder reads ~5 under and re-sending read-back sank it 14 pulses over a few scripts"
+}

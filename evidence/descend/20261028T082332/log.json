@@ -1,0 +1,15 @@
+[
+ {
+  "t": 1793172232.79,
+  "phase": "light",
+  "lamps": [
+   0,
+   254
+  ]
+ },
+ {
+  "t": 1793172260.98,
+  "phase": "abort",
+  "error": "RuntimeError('SAM 3.1 found no red cube in the arm0 view')"
+ }
+]

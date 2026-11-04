@@ -1,0 +1,11 @@
+[
+ {
+  "t": 1793173369.81,
+  "phase": "light",
+  "lamps": [
+   0,
+   254
+  ],
+  "fallback": "no lamp setting gives a usable arm view"
+ }
+]

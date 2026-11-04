@@ -35,11 +35,23 @@ HOVER_MM = 15.0      # stop this far above the target: aim_touch.py's APPROACH_M
 MAX_MOVE = 150       # pulses per joint in one go; a bigger jump means the model or the pose is off
 TILT_WARN_DEG = 5.0  # sheet normal vs base z: more = model, pose or camera convention is wrong
 ARM = hk.ArmKinematics()
+CALIB: dict | None = None  # arm terms from `arm_calibrate.py fit-arm` (--calib); None: the nominal URDF
+APPROACH = -1  # the final approach those terms assume, per joint: from 20 pulses above (gate 0's repeatable side)
+
+
+def arm_pulses(q: dict, terms: dict, sign: dict | None = None) -> dict:
+    """Pulses the nominal model should see for commanded `q`: shoulder/elbow zero offsets plus a direction offset
+    b_j * approach_j per joint (`sign` per joint, default APPROACH). docs/plan_2026-10-30_arm_calibration.md."""
+    sign = sign or {}
+    out = {k: v + terms["b"][str(k)] * sign.get(k, APPROACH) for k, v in q.items() if str(k) in terms["b"]}
+    out[2] += terms["d2"]
+    out[3] += terms["d3"]
+    return {**q, **out}
 
 
 def camera_in_base(pose: dict) -> tuple[np.ndarray, np.ndarray]:
     """Model camera pose (R, origin mm): optical frame -> base_link, at these (float) pulses."""
-    rot, origin = ARM.camera_pose(hk.pulses_to_joints(pose))
+    rot, origin = ARM.camera_pose(hk.pulses_to_joints(arm_pulses(pose, CALIB) if CALIB else pose))
     return rot, origin * 1000.0
 
 
@@ -86,7 +98,10 @@ def main() -> None:
     ap.add_argument("--joints", type=int, nargs="+", default=JOINTS)
     ap.add_argument("--go", action="store_true", help="send the solved pose (default: plan only)")
     ap.add_argument("--ms", type=int, default=1500)
+    ap.add_argument("--calib", type=Path, help="arm terms (evidence/tip/arm_model.json); the move then approaches from above")
     args = ap.parse_args()
+    global CALIB
+    CALIB = json.loads(args.calib.read_text()) if args.calib else None
     pose = {int(k): int(v) for k, v in (args.pose or START_POSE).items()}
     out = args.out / time.strftime("%Y%m%dT%H%M%S")
     out.mkdir(parents=True)
@@ -137,6 +152,9 @@ def main() -> None:
         print("plan only; add --go to move. Next commanded pose:", json.dumps(planned))
         return
     from rig_io import servo  # robot I/O only when moving
+    if CALIB:  # the terms hold for one approach side: come from 20 pulses above it
+        servo({"set": {str(k): v - APPROACH * 20 for k, v in planned.items() if k in args.joints}, "ms": args.ms})
+        time.sleep(args.ms / 1000 + 0.3)
     servo({"set": {str(k): v for k, v in planned.items()}, "ms": args.ms})
     time.sleep(args.ms / 1000 + 0.8)
     img = tt.snap_arm(3)

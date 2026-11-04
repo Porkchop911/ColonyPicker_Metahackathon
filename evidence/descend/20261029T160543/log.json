@@ -1,0 +1,20 @@
+[
+ {
+  "t": 1793286343.15,
+  "phase": "args",
+  "argv": "--out D:\\robot\\ColonyPicker_Metahackathon\\evidence\\descend --lam 190 --jab --stop-file D:\\robot\\ColonyPicker_Metahackathon\\evidence\\descend\\stop.flag --dot 720.7 336.5",
+  "wait_s": {}
+ },
+ {
+  "t": 1793286377.95,
+  "phase": "light",
+  "lamps": [
+   0,
+   254
+  ],
+  "fallback": "no lamp setting gives a usable arm view",
+  "wait_s": {
+   "sleep": 1.5
+  }
+ }
+]

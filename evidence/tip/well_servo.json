@@ -1,0 +1,131 @@
+{
+ "E12": {
+  "well": "E12",
+  "steps": [
+   {
+    "h": 30.0,
+    "tip": [
+     100.94010488062474,
+     -29.8313708239277,
+     -45.66893556078419
+    ],
+    "q": {
+     "1": 601,
+     "2": 286,
+     "3": 173,
+     "4": 692
+    }
+   },
+   {
+    "h": 15.0,
+    "tip": [
+     98.84139913351433,
+     -28.17973660402563,
+     -28.622888169061042
+    ],
+    "q": {
+     "1": 600,
+     "2": 257,
+     "3": 173,
+     "4": 721
+    }
+   },
+   {
+    "h": 8.0,
+    "tip": [
+     100.30735168544075,
+     -29.079633390810358,
+     -21.92950772185167
+    ],
+    "q": {
+     "1": 600,
+     "2": 239,
+     "3": 173,
+     "4": 745
+    }
+   },
+   {
+    "h": 4.0,
+    "tip": [
+     99.92725670061577,
+     -29.044222499040462,
+     -18.906142068096898
+    ],
+    "q": {
+     "1": 600,
+     "2": 232,
+     "3": 173,
+     "4": 753
+    }
+   },
+   {
+    "h": 2.0,
+    "tip": [
+     100.27936142133294,
+     -28.65291748585223,
+     -18.03225164862581
+    ],
+    "q": {
+     "1": 600,
+     "2": 229,
+     "3": 173,
+     "4": 756
+    }
+   }
+  ],
+  "went_in": true,
+  "gate_xy_mm": 0.9386950715166544,
+  "seen_in": "E12",
+  "photo": "evidence/tip/well2_20261101T000341_servo_E12.top.jpg"
+ },
+ "D12": {
+  "well": "D12",
+  "went_in": false,
+  "reason": "probe of joint 2: tip not measured"
+ },
+ "D11": {
+  "well": "D11",
+  "went_in": false,
+  "reason": "not within 3.0 mm at 30 mm"
+ },
+ "E11": {
+  "well": "E11",
+  "went_in": false,
+  "reason": "not within 2.5 mm at 4 mm"
+ },
+ "F11": {
+  "well": "F11",
+  "went_in": false,
+  "reason": "probe of joint 1: tip not measured"
+ },
+ "F12": {
+  "well": "F12",
+  "went_in": false,
+  "reason": "probe of joint 1: tip not measured"
+ },
+ "G12": {
+  "well": "G12",
+  "went_in": false,
+  "reason": "probe of joint 1: tip not measured"
+ },
+ "G11": {
+  "well": "G11",
+  "went_in": false,
+  "reason": "probe of joint 1: tip not measured"
+ },
+ "C11": {
+  "well": "C11",
+  "went_in": false,
+  "reason": "probe of joint 1: tip not measured"
+ },
+ "C12": {
+  "well": "C12",
+  "went_in": false,
+  "reason": "probe of joint 1: tip not measured"
+ },
+ "B12": {
+  "well": "B12",
+  "went_in": false,
+  "reason": "probe of joint 1: tip not measured"
+ }
+}
