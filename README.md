@@ -1,12 +1,16 @@
 # ColonyPicker
 
+## [Try it now: offline demo guide](docs/offline_demo_guide.md)
+
+**No robot, GPU or key needed.** Double-click `start_offline_demo.bat`, pick a plate and press **Start**. **[Read the guide](docs/offline_demo_guide.md)** for what to look for.
+
+---
+
 A robot arm with a steel needle picks microbial colonies from an agar dish, on its own. **Meta SAM 3.1** finds the colonies on a live
 overhead camera image. The arm then moves the needle into a colony, into its own sample well, into a disinfectant well and into a
 rinse well, while a browser page shows each step. Meta models are the only AI models it calls at runtime: SAM 3.1 marks the colonies, and Muse Spark can act as its critic.
 
 Picking colonies is repetitive hand work in the lab. This project puts Meta's models in charge of seeing and judging the plate, so a robot can take that work over.
-
-**Try it without the robot:** double-click `start_offline_demo.bat`, pick a plate and press **Start**. See the [offline demo guide](docs/offline_demo_guide.md).
 
 > Agents and new contributors: read `CLAUDE.md` first. The arm is real, and its safety rules there are not optional.
 
@@ -25,7 +29,7 @@ The working system is shown in the demo video.
 
 | Meta model | Where it runs | What it does |
 |---|---|---|
-| SAM 3.1 (`facebookresearch/sam3`, `facebook/sam3.1` weights) | Locally on the PC GPU (RTX 3090), kept loaded by `tools/sam_server.py` | Finds the dish and each colony, with a confidence score |
+| SAM 3.1 (`facebookresearch/sam3`, `facebook/sam3.1` weights) | Locally on the PC GPU (RTX 3090), kept loaded by `tools/sam_server.py`. It's also available through the Meta Model API | Finds the dish and each colony, with a confidence score |
 | Muse Spark (`muse-spark-1.3`, Meta Model API) | Over the API, from `tools/colony_agent.py` | Critic of SAM in a tool-calling loop: refuses a lawn or unusable plate, strikes marks that are not one clean colony, chooses what the arm picks |
 
 SAM finds where things are, to the pixel, but it also rings glints, smears and bumps in a lawn. Muse Spark looks at the whole plate and judges what those marks are. It never gets coordinates or motion: it returns mark numbers, and the arm goes to SAM's position for each. The code rejects a choice too close to the rim or a neighbour, one it hasn't looked at, or one it struck, and the model must choose again. Spark also tunes SAM: it words its own prompt for what the colonies on a plate look like and sends SAM back, at most 3 times, a cap the code enforces.
@@ -69,7 +73,7 @@ It prints each tool call and reason, and writes `evidence/offline_result_1.jpg`:
 
 ### SAM 3.1 only, no robot
 
-This needs a GPU and access to the gated `facebook/sam3.1` weights on Hugging Face, and works on any photo of a dish.
+This needs a GPU and access to the gated `facebook/sam3.1` weights on Hugging Face, and works on any photo of a dish. SAM 3.1 can also be used through the Meta Model API with no GPU; this project runs it locally, so an API version would need its own small adapter in `tools/sam_detect.py`.
 
 ```bash
 uv venv .venv --python 3.12
