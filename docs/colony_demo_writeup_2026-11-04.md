@@ -27,6 +27,11 @@ to its sample well, A12 (disinfect) and A10 (rinse), and the page records itself
 Run demo takes 3 colonies, retries a failed pick up to 3 times, and Record clears `wells_used.json`.
 `tools/chain_picks.py U,V ... --wells` does the same without the page.
 
+## Muse Spark critic
+
+**Run: Muse Spark chooses** on the page runs `colony_cycle.py --agent`. `tools/colony_agent.py` looks at the dish, refuses a lawn, strikes bad marks, can word its own SAM prompt (at most 3 re-runs) and returns colony numbers. The arm goes to SAM's position for each. A refusal ends the run; if the API fails, the operator chooses on the page.
+It has run on saved plates only, not yet on the arm: [offline_demo_guide.md](offline_demo_guide.md). Set `DISH_C` for the plate first, or the rim limit rejects good colonies.
+
 ## What made it work
 
 | Problem | Fix |

@@ -4,12 +4,16 @@ A robot arm with a steel needle picks microbial colonies from an agar dish, on i
 overhead camera image. The arm then moves the needle into a colony, into its own sample well, into a disinfectant well and into a
 rinse well, while a browser page shows each step. Meta models are the only AI models it calls at runtime: SAM 3.1 marks the colonies, and Muse Spark can act as its critic.
 
+Picking colonies is repetitive hand work in the lab. This project puts Meta's models in charge of seeing and judging the plate, so a robot can take that work over.
+
+**Try it without the robot:** double-click `start_offline_demo.bat`, pick a plate and press **Start**. See the [offline demo guide](docs/offline_demo_guide.md).
+
 > Agents and new contributors: read `CLAUDE.md` first. The arm is real, and its safety rules there are not optional.
 
 ## A hardware project
 
 This is real robotics, so the full demo depends on physical hardware: this robot arm, its needle, two fixed cameras, the lamps and the exact position of the plate.
-Its calibration belongs to that one setup and can't be reproduced remotely. A judge without the rig can run the SAM 3.1 detection on a dish photo and the offline checks below.
+Its calibration belongs to that one setup and can't be reproduced remotely. Without the rig, you can run the [offline demo](docs/offline_demo_guide.md), SAM 3.1 detection on a dish photo, and the offline checks below.
 The working system is shown in the demo video.
 
 ## What it does
@@ -40,6 +44,7 @@ The tip tracking is image differencing, not a learned model.
 | Full loop from the page | 3 colonies -> 3 sample wells -> disinfect -> rinse, about 10 minutes |
 | Wells | 5 used wells entered 3 of 3 shuffled passes, checked by photo |
 | SAM | Dish found with score 0.93-0.98. On dense plates, 113-181 colonies ringed per dish, not every colony |
+| Critic | 20 saved plates: refused the 9 lawn, hazy or crowded rig views, and chose colonies on the other 11, tuning SAM's prompt on each |
 
 **Known limits.** The last drop still scatters by about 1-2 mm, so colonies of 3-4 mm are hit reliably and 2 mm colonies give a mix of hits, edge hits and misses.
 Well positions are calibrated to one physical setup and must be redone if the plate, robot or cameras move. The arm reaches columns 7-12 of the plate from this position. Details:
@@ -51,7 +56,7 @@ Well positions are calibrated to one physical setup and must be redone if the pl
 
 This runs the Muse Spark critic on 20 saved plates with their saved SAM 3.1 detections: 14 dish views from the rig and 6 phone photos of other plates, whose mm scale is estimated from the plate type. It needs no GPU, robot or camera.
 
-On Windows, double-click `start_offline_demo.bat`. It opens the demo page without the robot. Pick a dish photo and press **Start**, and the critic runs in front of you: live with `MODEL_API_KEY`, otherwise a recorded run. Elsewhere, or for the terminal version:
+On Windows, double-click `start_offline_demo.bat`. It opens the demo page without the robot. Pick a dish photo and press **Start**, and the critic runs in front of you, as a recorded run or live with a key. The [guide](docs/offline_demo_guide.md) has the details. Elsewhere, or for the terminal version:
 
 ```bash
 pip install opencv-python numpy
@@ -106,13 +111,17 @@ Edit `start_demo.bat` to point at your own Python. Read the safety rules in `CLA
 |---|---|
 | `tools/colony_detect.py`, `tools/sam_detect.py`, `tools/sam_server.py` | SAM 3.1 detection, and the process that keeps it loaded |
 | `tools/colony_cycle.py`, `tools/colony_pick.py`, `tools/well_tour.py` | The full cycle, one pick, and the well moves |
-| `tools/demo_server.py` | The demo page |
+| `tools/demo_server.py`, `tools/demo_page.html` | The demo page |
+| `tools/colony_agent.py`, `tools/test_colony_agent.py` | The Muse Spark critic loop and its offline test |
+| `tools/offline_page.py`, `tools/offline_demo.py`, `evidence/offline_plate_*` | The offline demo and its saved plates |
 | `tools/plate_rig.py`, `tools/a1lib.py`, `tools/well_reach.py`, `tools/rig_io.py` | Camera and plate geometry, arm model, safe moves, robot and camera I/O |
 | `robot/` | The bridge that runs on the robot, and the arm URDF |
-| `docs/` | Write-ups, newest dated file first. Older files are history |
+| `docs/` | Write-ups, newest dated file first, and the [offline demo guide](docs/offline_demo_guide.md). Older files are history |
 | `evidence/tip/` | Calibration and state files for this rig |
 
 ## Pre-existing vs. built during the event
+
+**Hackathon problem statement:** Build for Your World.
 
 **Pre-existing (not in this repo):** the robot's own control stack — ROS 2 servo/motor driver, camera
 driver, HTTP gateway (`/drive`), environment script. Also an earlier needle-touch prototype and a
@@ -124,8 +133,6 @@ robot-motion triangulation of the needle tip, closed-loop strafing, Hue lighting
 detection, the descent/dotting pipeline, the PC↔robot JSON-lines bridge (`robot/servo_bridge.py` +
 `tools/rig_io.py`), the arm-model calibration (`tools/arm_calibrate.py`), the demo dashboard, the
 offline regression harness, and `docs/` + `evidence/`.
-
-**Hackathon problem statement:** Build for Your World: picking colonies is repetitive hand work in the lab, and here Meta's models see and judge the plates so a robot can take it over.
 
 **Open-source dependencies:** SAM 3.1 (Meta, `facebookresearch/sam3`, gated `facebook/sam3.1` weights),
 PyTorch, OpenCV, NumPy, Philips Hue local API.
