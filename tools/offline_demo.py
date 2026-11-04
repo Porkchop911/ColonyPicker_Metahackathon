@@ -42,8 +42,41 @@ else:
         time.sleep(PACE)  # the demo page plays a recorded run at reading speed
         return next(replies)
 
+
+
+def sam(prompt):
+    """SAM 3.1 for a re-run: what was saved for this prompt, else real SAM if --gpu-sam (how the recorded runs were made)."""
+    if prompt in saved_sam:
+        return saved_sam[prompt]
+    if SAM_MODEL is None:
+        raise RuntimeError(f'no GPU in this demo, saved prompts are {sorted(saved_sam)}')
+    h, w = frame.shape[:2]
+    T = int(30 * ca.PX_MM)  # 30 mm tiles at about 1000 px, as the rig's zoom
+    zoom = 1000 / T
+    found = []
+    for ty in range(0, max(h - T, 0) + int(T * .8), int(T * .8)):
+        for tx in range(0, max(w - T, 0) + int(T * .8), int(T * .8)):
+            tile = frame[ty:ty + T, tx:tx + T]
+            if min(tile.shape[:2]) > 40:
+                found += cd._hits(SAM_MODEL, cv2.resize(tile, None, fx=zoom, fy=zoom, interpolation=cv2.INTER_CUBIC), prompt, 0.05, zoom, tx, ty, 'small')
+    kept = []
+    for f in sorted(found, key=lambda f: -f['score']):
+        u, v = f['centroid']
+        d = 2 * (f['area'] / 3.1416) ** .5 / ca.PX_MM
+        if d <= 6 and all((u - q['px'][0]) ** 2 + (v - q['px'][1]) ** 2 >= (0.7 * ca.PX_MM) ** 2 for q in kept):
+            kept.append({'px': [round(u, 1), round(v, 1)], 'd_mm': round(d, 1), 'score': round(float(f['score']), 2)})
+    saved_sam[prompt] = kept
+    json.dump(saved_sam, open(f'{E}/offline_plate_{plate}_sam.json', 'w'))
+    return kept
+
+
+SAM_MODEL = None
+if '--gpu-sam' in sys.argv:
+    import colony_detect as cd
+    import sam_detect
+    SAM_MODEL = sam_detect.load()
 try:
-    chosen = ca.decide(frame, variants, [], (frame.shape[1] / 2, frame.shape[0] / 2), n, call=call, sam=saved_sam.__getitem__)
+    chosen = ca.decide(frame, variants, [], (frame.shape[1] / 2, frame.shape[0] / 2), n, call=call, sam=sam)
 except ca.Refused as e:
     print(f'REFUSED: {e}')
     chosen = []

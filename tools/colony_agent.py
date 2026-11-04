@@ -1,10 +1,11 @@
 """Muse Spark is the critic of SAM 3.1, in a tool-calling loop. SAM marks colonies; Spark judges the whole plate and refuses a lawn outright, strikes marks that are not
-one clean colony, can send SAM back with another prompt (at most 3 times), and chooses what the arm picks from what survives. A choice that breaks the rules goes back to it as a tool error. It never gets coordinates or motion: colony_cycle.py
+one clean colony, can word its own SAM prompt and send SAM back (at most 3 times), and chooses what the arm picks from what survives. A choice that breaks the rules goes back to it as a tool error. It never gets coordinates or motion: colony_cycle.py
 picks the SAM positions of the numbers it chose. Key: MODEL_API_KEY, else {"key": "..."} in config/meta.local.json (kept out of git).
 usage: python tools/colony_agent.py [N]   decides on the saved st2_top.jpg and colony_variants.json, no arm, writes evidence/tip/colony_agent.json"""
 import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -24,7 +25,7 @@ AGAR_R = 27.5  # mm, the 55 mm dish
 RIM_MM, GAP_MM = 4.0, 0.5  # the tip reading breaks near the rim; a touching neighbour stops a pick
 MAX_TURNS, MAX_VIEW = 14, 12
 MAX_RERUNS = 3  # hard cap, counted here and not left to the model
-SAM_PROMPTS = ('white speck', 'round white spot', 'bubble')  # the ones that found colonies here; 'colony' finds nothing
+SAM_PROMPTS = ('white speck', 'round white spot', 'bubble')  # known to find colonies here; 'colony' finds nothing. Saved for each plate, so a run with no GPU can re-run them
 PROMPT = """You are the critic of SAM 3.1 for a robot arm with a needle. SAM marks colonies on an agar dish, and it also marks things that are not colonies. It cannot tell a
 growing lawn from colonies; you can. Your judgement decides what the arm may touch.
 1. Call view_dish and judge the whole plate first. Separate colonies are distinct round domes with clean agar between them. If the surface is a lawn or confluent film, a
@@ -32,7 +33,8 @@ growing lawn from colonies; you can. Your judgement decides what the arm may tou
    reason. Do not look for the best of a bad plate: a bump in a lawn is not a colony and a pick from it is not a pure culture. Refuse when in doubt.
 2. Otherwise call list_colonies and inspect candidates with view_colonies. Use reject_colonies for every mark that is not one clean colony: glints, rim reflections, scratches,
    smears, bubbles, two merged colonies, bumps in haze. Say why.
-   If SAM missed clear colonies or its marks are poor, call rerun_sam with another prompt: new marks join the list with new numbers. You have at most {reruns} re-runs.
+   On any plate you do not refuse, tune SAM once: word your own short prompt for what the colonies on this plate look like, 1 to 4 plain words such as "small cream dome", and
+   call rerun_sam. SAM knows shapes and colours, not biology: "colony" finds nothing. New marks join the list with new numbers. You have at most {reruns} re-runs.
 3. Call choose_colonies with exactly {n} surviving colonies in picking order, each with a one-sentence reason. Every one must have been viewed. The needle lands within about 1-2 mm,
    so size matters most: largest first, under 2 mm only if nothing larger survives. If fewer than {n} survive, call refuse_plate instead."""
 TOOLS = [{'type': 'function', 'function': f} for f in (
@@ -44,8 +46,8 @@ TOOLS = [{'type': 'function', 'function': f} for f in (
     {'name': 'reject_colonies', 'description': 'Strike marks that are not one clean colony. They can no longer be chosen.',
      'parameters': {'type': 'object', 'required': ['rejects'], 'properties': {'rejects': {'type': 'array', 'items': {
          'type': 'object', 'properties': {'number': {'type': 'integer'}, 'reason': {'type': 'string'}}, 'required': ['number', 'reason']}}}}},
-    {'name': 'rerun_sam', 'description': f'Run SAM 3.1 again on this photo with another text prompt, at most {MAX_RERUNS} times. New marks are added; marks you struck stay struck.',
-     'parameters': {'type': 'object', 'required': ['prompt'], 'properties': {'prompt': {'type': 'string', 'enum': list(SAM_PROMPTS)},
+    {'name': 'rerun_sam', 'description': f'Run SAM 3.1 again on this photo with your own text prompt of 1 to 4 plain words, at most {MAX_RERUNS} times. New marks are added; marks you struck stay struck.',
+     'parameters': {'type': 'object', 'required': ['prompt'], 'properties': {'prompt': {'type': 'string'},
                                                                              'min_score': {'type': 'number', 'description': 'Keep marks at or above this SAM score, 0.05-0.9. Default 0.3.'}}}},
     {'name': 'choose_colonies', 'description': 'Submit the final choice, in picking order.',
      'parameters': {'type': 'object', 'required': ['picks'], 'properties': {'picks': {'type': 'array', 'items': {
@@ -190,13 +192,13 @@ def decide(frame, variants, taken, dish_c, n, say=print, call=post, sam=None):
                     if sam is None or reruns >= MAX_RERUNS:
                         out = f'REJECTED: no re-runs left ({reruns} of {MAX_RERUNS} used). Choose or refuse now.'
                         say(f'Muse Spark -> rerun_sam: refused, {reruns} of {MAX_RERUNS} used')
-                    elif a['prompt'] not in SAM_PROMPTS:
-                        out = f'REJECTED: prompt must be one of {SAM_PROMPTS}.'
+                    elif not re.fullmatch(r'[a-z]+( [a-z]+){0,3}', a['prompt'].strip().lower()):  # goes to SAM as text, from a model
+                        out = 'REJECTED: the prompt must be 1 to 4 plain words.'
                     else:
                         reruns += 1  # counted before the call: a failed re-run still uses one up
                         floor = max(0.05, min(0.9, float(a.get('min_score', 0.3))))
                         try:
-                            marks = [m for m in sam(a['prompt']) if m['score'] >= floor]
+                            marks = [m for m in sam(a['prompt'].strip().lower()) if m['score'] >= floor]
                         except Exception as e:
                             marks, out = None, f'SAM failed: {e}'
                             say(f'Muse Spark -> rerun_sam({a["prompt"]}): SAM failed')

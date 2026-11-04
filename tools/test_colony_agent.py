@@ -88,7 +88,7 @@ def sam(prompt):
     return [{'px': [420.0, 420.0], 'd_mm': 4.0, 'score': 0.9}, {'px': [402.0, 500.0], 'd_mm': 3.0, 'score': 0.9}, {'px': [300.0, 500.0], 'd_mm': 3.0, 'score': 0.1}]
 
 
-loop = iter([reply(('view_dish', {})), reply(('rerun_sam', {'prompt': 'round white spot'})), reply(('rerun_sam', {'prompt': 'no such prompt'})),
+loop = iter([reply(('view_dish', {})), reply(('rerun_sam', {'prompt': 'round white spot'})), reply(('rerun_sam', {'prompt': 'rm -rf /'})),
              reply(('rerun_sam', {'prompt': 'bubble'})), reply(('rerun_sam', {'prompt': 'white speck'})), reply(('rerun_sam', {'prompt': 'bubble'})),
              reply(('view_colonies', {'numbers': [7, 4]})), reply(('choose_colonies', {'picks': [{'number': 7, 'reason': 'new'}, {'number': 4, 'reason': 'old'}]}))])
 seen2 = []
@@ -108,7 +108,7 @@ assert saved['reruns'] == 3
 assert got == [[420.0, 420.0], good['px']], got
 assert len(variants['loose']) == 6, 'the caller\'s list stays as it was'
 tool = [m['content'] for m in seen2[-1]['messages'] if m['role'] == 'tool']
-assert any('no re-runs left' in x for x in tool) and any('prompt must be' in x for x in tool) and any('SAM failed' in x for x in tool), tool
+assert any('no re-runs left' in x for x in tool) and any('plain words' in x for x in tool) and any('SAM failed' in x for x in tool), tool
 
 
 def stubborn(body):

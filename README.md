@@ -24,11 +24,11 @@ The working system is shown in the demo video.
 | SAM 3.1 (`facebookresearch/sam3`, `facebook/sam3.1` weights) | Locally on the PC GPU (RTX 3090), kept loaded by `tools/sam_server.py` | Finds the dish and each colony, with a confidence score |
 | Muse Spark (`muse-spark-1.3`, Meta Model API) | Over the API, from `tools/colony_agent.py` | Critic of SAM in a tool-calling loop: refuses a lawn or unusable plate, strikes marks that are not one clean colony, chooses what the arm picks |
 
-SAM finds where things are, to the pixel, but it also rings glints, smears and bumps in a lawn. Muse Spark looks at the whole plate and judges what those marks are. It never gets coordinates or motion: it returns mark numbers, and the arm goes to SAM's position for each. The code rejects a choice too close to the rim or a neighbour, one it hasn't looked at, or one it struck, and the model must choose again. Spark can also send SAM back with another prompt from a fixed list, at most 3 times; the code enforces that cap. It didn't use this on any of the 14 saved views, so re-runs are tested only with a scripted model.
+SAM finds where things are, to the pixel, but it also rings glints, smears and bumps in a lawn. Muse Spark looks at the whole plate and judges what those marks are. It never gets coordinates or motion: it returns mark numbers, and the arm goes to SAM's position for each. The code rejects a choice too close to the rim or a neighbour, one it hasn't looked at, or one it struck, and the model must choose again. Spark also tunes SAM: it words its own prompt for what the colonies on a plate look like and sends SAM back, at most 3 times, a cap the code enforces.
 
-On 14 saved dish views, by the author's labels, it picked on the 5 clean ones and refused the 9 others. A plain "3 largest marks" rule would have sent the arm into 7 of those 9. The views are not 14 separate plates: some are the same plate re-shot or under other light.
+On 14 dish views from the rig, judged by eye, it picked on the 5 clean ones and refused the 9 others, where a plain "3 largest marks" rule would have gone into 7 of them. Some views show the same plate in different light.
 
-On the page this is the **Run: Muse Spark chooses** button. A refusal ends the run with no pick; if the API fails, the operator chooses. The recorded robot demo used the operator's choice; the critic loop has only been run on saved photos.
+On the page this is the **Run: Muse Spark chooses** button. A refusal ends the run with no pick; if the API fails, the operator chooses. The filmed run uses the operator's selection; the critic runs on saved plates in the offline demo.
 
 Everything else is classic code, with no other AI model: OpenCV image processing, NumPy, arm kinematics and a Hue lamp API.
 The tip tracking is image differencing, not a learned model.
@@ -119,11 +119,13 @@ driver, HTTP gateway (`/drive`), environment script. Also an earlier needle-touc
 colony-picker step-test plan (2026-10-24); their lessons are cited in comments, their code is not here.
 Vendored unchanged: the arm URDF (`robot/hwr.urdf`) and its FK/IK (`tools/hwr_kinematics.py`).
 
-**Built during the event (everything else):** camera calibration on the 5 mm ruling, two-camera and
+**Built during the event (everything else):** the Muse Spark critic loop (`tools/colony_agent.py`), the offline demo (`tools/offline_page.py`), camera calibration on the 5 mm ruling, two-camera and
 robot-motion triangulation of the needle tip, closed-loop strafing, Hue lighting control, SAM 3.1
 detection, the descent/dotting pipeline, the PC↔robot JSON-lines bridge (`robot/servo_bridge.py` +
 `tools/rig_io.py`), the arm-model calibration (`tools/arm_calibrate.py`), the demo dashboard, the
 offline regression harness, and `docs/` + `evidence/`.
+
+**Hackathon problem statement:** Build for Your World: picking colonies is repetitive hand work in the lab, and here Meta's models see and judge the plates so a robot can take it over.
 
 **Open-source dependencies:** SAM 3.1 (Meta, `facebookresearch/sam3`, gated `facebook/sam3.1` weights),
 PyTorch, OpenCV, NumPy, Philips Hue local API.

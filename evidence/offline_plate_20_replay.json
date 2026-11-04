@@ -1,16 +1,16 @@
 [
  {
-  "id": "chatcmpl-01a1a83c-5e99-765e-9b07-16ee77a571e9",
+  "id": "chatcmpl-01a1a86c-696d-7507-942f-c59db24c3973",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "I\u2019ll start by inspecting the whole plate to judge colony quality.",
+     "content": "First I'll inspect the whole plate to decide if it's pickable.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_f3dcde16-0f70-4346-bba3-88bf224764bc",
+       "id": "call_a5ab60a2-8ff4-4bb1-8147-f6654b75816b",
        "type": "function",
        "function": {
         "name": "view_dish",
@@ -23,14 +23,14 @@
     "logprobs": null
    }
   ],
-  "created": 1793823891,
+  "created": 1793827039,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
    "completion_tokens": 81,
-   "prompt_tokens": 1450,
-   "total_tokens": 1531,
+   "prompt_tokens": 1490,
+   "total_tokens": 1571,
    "completion_tokens_details": {
     "reasoning_tokens": 22
    },
@@ -40,17 +40,17 @@
   }
  },
  {
-  "id": "chatcmpl-01a1a83c-72c6-7654-aad3-7c0b85baafe3",
+  "id": "chatcmpl-01a1a86c-76bb-7732-882d-197c0c513ecc",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "The plate shows distinct separated colonies in the lower region, so I\u2019ll list candidate colonies for closer inspection.",
+     "content": "The plate shows scattered isolated colonies, so I'll list SAM's candidates.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_56f4fcfa-6d71-4961-9fcd-dd8177ddea71",
+       "id": "call_da345432-23e8-45c6-b661-edffc31fc21e",
        "type": "function",
        "function": {
         "name": "list_colonies",
@@ -63,16 +63,16 @@
     "logprobs": null
    }
   ],
-  "created": 1793823896,
+  "created": 1793827042,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 540,
-   "prompt_tokens": 2408,
-   "total_tokens": 2948,
+   "completion_tokens": 242,
+   "prompt_tokens": 2448,
+   "total_tokens": 2690,
    "completion_tokens_details": {
-    "reasoning_tokens": 457
+    "reasoning_tokens": 166
    },
    "prompt_tokens_details": {
     "cached_tokens": 1393
@@ -80,21 +80,21 @@
   }
  },
  {
-  "id": "chatcmpl-01a1a83c-9116-750f-bf68-619cedc3f215",
+  "id": "chatcmpl-01a1a86c-a276-7536-b0e9-bc2eca4ef92d",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "This plate has usable isolated colonies. I\u2019ll examine the largest candidates first.",
+     "content": "I see dense patches but also clear isolated colonies, so I'll tune SAM to refine the detection.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_7f13c859-7ed6-4545-85ca-02f88c8409fa",
+       "id": "call_6dc91879-5a17-47d0-b64e-3f69f63dafcf",
        "type": "function",
        "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[75,301,195,278,246,107]}"
+        "name": "rerun_sam",
+        "arguments": "{\"prompt\":\"small white dome\"}"
        }
       }
      ],
@@ -103,16 +103,16 @@
     "logprobs": null
    }
   ],
-  "created": 1793823904,
+  "created": 1793827054,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 887,
-   "prompt_tokens": 18492,
-   "total_tokens": 19379,
+   "completion_tokens": 1081,
+   "prompt_tokens": 18525,
+   "total_tokens": 19606,
    "completion_tokens_details": {
-    "reasoning_tokens": 795
+    "reasoning_tokens": 996
    },
    "prompt_tokens_details": {
     "cached_tokens": 1393
@@ -120,37 +120,21 @@
   }
  },
  {
-  "id": "chatcmpl-01a1a83c-e40b-70c1-a6bc-9e1b29cea209",
+  "id": "chatcmpl-01a1a86c-f2d4-7519-bbe2-45d4fcdbff06",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "The first wide view is inconclusive for bubbles versus colonies, so I\u2019ll re-examine the largest marks at higher magnification.",
+     "content": "The initial tuning returned no new marks; I'll visually inspect the largest candidates.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_0aa9271e-09c3-47d5-bfb0-bd4cc5465cf7",
+       "id": "call_85bcc92d-ef56-4c45-963d-5acd7d4db63b",
        "type": "function",
        "function": {
         "name": "view_colonies",
-        "arguments": "{\"numbers\":[75]}"
-       }
-      },
-      {
-       "id": "call_8254103e-03bc-4c0b-a6d5-d18c16d23df3",
-       "type": "function",
-       "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[301]}"
-       }
-      },
-      {
-       "id": "call_ace838da-fe11-4702-8281-3423ba94c622",
-       "type": "function",
-       "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[195]}"
+        "arguments": "{\"numbers\":[301,75,195,278,246,83]}"
        }
       }
      ],
@@ -159,56 +143,16 @@
     "logprobs": null
    }
   ],
-  "created": 1793823925,
+  "created": 1793827074,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 2348,
-   "prompt_tokens": 20288,
-   "total_tokens": 22636,
+   "completion_tokens": 1253,
+   "prompt_tokens": 18664,
+   "total_tokens": 19917,
    "completion_tokens_details": {
-    "reasoning_tokens": 2159
-   },
-   "prompt_tokens_details": {
-    "cached_tokens": 2289
-   }
-  }
- },
- {
-  "id": "chatcmpl-01a1a83c-fd53-7434-9f70-6dd9fe3ddcb3",
-  "choices": [
-   {
-    "finish_reason": "tool_calls",
-    "index": 0,
-    "message": {
-     "content": "Those larger marks look like bubbles rather than colonies, so I\u2019ll check small isolated candidates in the sparse area.",
-     "refusal": null,
-     "tool_calls": [
-      {
-       "id": "call_b01eda06-6922-4d35-a52d-290c8c149265",
-       "type": "function",
-       "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[10,83,45,105,206,21]}"
-       }
-      }
-     ],
-     "role": "assistant"
-    },
-    "logprobs": null
-   }
-  ],
-  "created": 1793823931,
-  "model": "muse-spark-1.3",
-  "service_tier": "default",
-  "object": "chat.completion",
-  "usage": {
-   "completion_tokens": 716,
-   "prompt_tokens": 21172,
-   "total_tokens": 21888,
-   "completion_tokens_details": {
-    "reasoning_tokens": 617
+    "reasoning_tokens": 1161
    },
    "prompt_tokens_details": {
     "cached_tokens": 1393
@@ -216,21 +160,21 @@
   }
  },
  {
-  "id": "chatcmpl-01a1a83d-3941-71d3-b4e8-8e6e85c1eeb4",
+  "id": "chatcmpl-01a1a86d-2c3e-7670-8e5d-59b279550f99",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "Those appear to be bubbles, so I\u2019ll look for clean isolated colonies in the sparse bottom area.",
+     "content": "Those larger marks look like bubbles rather than colonies, so I'll examine more isolated candidates in the sparse areas.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_591d5619-f81f-4e97-a8c9-f99db376850b",
+       "id": "call_70c6e7a9-fbc2-401c-98a8-766b61bb745d",
        "type": "function",
        "function": {
         "name": "view_colonies",
-        "arguments": "{\"numbers\":[278,301]}"
+        "arguments": "{\"numbers\":[10,45,105,204,205,206]}"
        }
       }
      ],
@@ -239,96 +183,16 @@
     "logprobs": null
    }
   ],
-  "created": 1793823946,
+  "created": 1793827089,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 1665,
-   "prompt_tokens": 22825,
-   "total_tokens": 24490,
+   "completion_tokens": 1186,
+   "prompt_tokens": 20310,
+   "total_tokens": 21496,
    "completion_tokens_details": {
-    "reasoning_tokens": 1580
-   },
-   "prompt_tokens_details": {
-    "cached_tokens": 21105
-   }
-  }
- },
- {
-  "id": "chatcmpl-01a1a83d-6a74-741a-9a86-4230a306c986",
-  "choices": [
-   {
-    "finish_reason": "tool_calls",
-    "index": 0,
-    "message": {
-     "content": "I need clear close-ups of sparse-region candidates to confirm clean isolated colonies.",
-     "refusal": null,
-     "tool_calls": [
-      {
-       "id": "call_1c0572f2-6f10-49c9-96ed-de69545397f9",
-       "type": "function",
-       "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[205]}"
-       }
-      }
-     ],
-     "role": "assistant"
-    },
-    "logprobs": null
-   }
-  ],
-  "created": 1793823959,
-  "model": "muse-spark-1.3",
-  "service_tier": "default",
-  "object": "chat.completion",
-  "usage": {
-   "completion_tokens": 1138,
-   "prompt_tokens": 23447,
-   "total_tokens": 24585,
-   "completion_tokens_details": {
-    "reasoning_tokens": 1061
-   },
-   "prompt_tokens_details": {
-    "cached_tokens": 22769
-   }
-  }
- },
- {
-  "id": "chatcmpl-01a1a83d-9f22-7103-b8f2-6c055812be59",
-  "choices": [
-   {
-    "finish_reason": "tool_calls",
-    "index": 0,
-    "message": {
-     "content": "Close-ups suggest the largest marks are bubbles, while small white dots look like clean colonies \u2014 I\u2019ll reject the bubbles and verify isolated candidates.",
-     "refusal": null,
-     "tool_calls": [
-      {
-       "id": "call_4b1c2f6e-b0dd-44c8-8751-a89ec9dc5a50",
-       "type": "function",
-       "function": {
-        "name": "reject_colonies",
-        "arguments": "{\"rejects\":[{\"number\":75,\"reason\":\"diffuse hazy smudge, not a solid white dome - likely bubble in agar\"},{\"number\":195,\"reason\":\"translucent ring with hollow centre, bubble not a colony\"},{\"number\":301,\"reason\":\"diffuse irregular haze, not a clean round dome - likely bubble/smudge\"}]}"
-       }
-      }
-     ],
-     "role": "assistant"
-    },
-    "logprobs": null
-   }
-  ],
-  "created": 1793823973,
-  "model": "muse-spark-1.3",
-  "service_tier": "default",
-  "object": "chat.completion",
-  "usage": {
-   "completion_tokens": 1413,
-   "prompt_tokens": 23759,
-   "total_tokens": 25172,
-   "completion_tokens_details": {
-    "reasoning_tokens": 1246
+    "reasoning_tokens": 1088
    },
    "prompt_tokens_details": {
     "cached_tokens": 18417
@@ -336,21 +200,21 @@
   }
  },
  {
-  "id": "chatcmpl-01a1a83d-adef-754c-86d7-f1a44b426af2",
+  "id": "chatcmpl-01a1a86d-af75-74c6-bd26-4e800f76e353",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "Rejecting diffuse bubble marks and focusing on clean dots in the sparse zone.",
+     "content": "I found one promising colony but need more close-up views to confirm three clean picks.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_123e1f16-edde-4b55-bc26-b3636403d757",
+       "id": "call_9162a7a3-3e8e-4f70-b921-0285183ba10f",
        "type": "function",
        "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[206,204,83]}"
+        "name": "reject_colonies",
+        "arguments": "{\"rejects\":[{\"number\":75,\"reason\":\"large translucent bubble, not a white dome colony\"},{\"number\":83,\"reason\":\"empty agar, no dome visible\"},{\"number\":195,\"reason\":\"ringed bubble with highlight, not a colony\"},{\"number\":278,\"reason\":\"empty agar, no distinct dome\"},{\"number\":204,\"reason\":\"empty agar in zoom, no colony\"},{\"number\":205,\"reason\":\"no distinct dome visible\"},{\"number\":206,\"reason\":\"empty agar, no dome\"},{\"number\":45,\"reason\":\"empty agar, no distinct colony\"}]}"
        }
       }
      ],
@@ -359,38 +223,38 @@
     "logprobs": null
    }
   ],
-  "created": 1793823976,
+  "created": 1793827122,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 295,
-   "prompt_tokens": 23960,
-   "total_tokens": 24255,
+   "completion_tokens": 3093,
+   "prompt_tokens": 22012,
+   "total_tokens": 25105,
    "completion_tokens_details": {
-    "reasoning_tokens": 212
+    "reasoning_tokens": 2874
    },
    "prompt_tokens_details": {
-    "cached_tokens": 23665
+    "cached_tokens": 18545
    }
   }
  },
  {
-  "id": "chatcmpl-01a1a83d-c5a5-766a-a9e8-dc78e2202754",
+  "id": "chatcmpl-01a1a86d-d843-76eb-bc9c-18c9d92eaf2f",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "I found a clean small colony; now I need tight close-ups of two more well-isolated candidates.",
+     "content": "Zoomed views are too wide to confirm detail, so I'll focus on isolated bottom-region colonies.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_a26b3cae-e451-43ad-a1a2-4c598c7457df",
+       "id": "call_e1853def-b62b-4606-b974-9b2016b8cc13",
        "type": "function",
        "function": {
         "name": "view_colonies",
-        "arguments": "{\"numbers\":[206]}"
+        "arguments": "{\"numbers\":[301,246,306,107,108,115]}"
        }
       }
      ],
@@ -399,16 +263,16 @@
     "logprobs": null
    }
   ],
-  "created": 1793823982,
+  "created": 1793827133,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 298,
-   "prompt_tokens": 25238,
-   "total_tokens": 25536,
+   "completion_tokens": 850,
+   "prompt_tokens": 22280,
+   "total_tokens": 23130,
    "completion_tokens_details": {
-    "reasoning_tokens": 215
+    "reasoning_tokens": 754
    },
    "prompt_tokens_details": {
     "cached_tokens": 20209
@@ -416,77 +280,21 @@
   }
  },
  {
-  "id": "chatcmpl-01a1a83d-e19b-7215-874f-35f4a843cf5d",
+  "id": "chatcmpl-01a1a86e-32ae-7511-ad93-5970e9c939bd",
   "choices": [
    {
     "finish_reason": "tool_calls",
     "index": 0,
     "message": {
-     "content": "That mark is too faint, so I\u2019ll inspect other isolated candidates in the sparse zone.",
+     "content": "I've confirmed isolated colonies in the sparse region, so I'll finalize the three largest picks.",
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_acf6d9ab-9018-4ed6-ac48-b4eb4463a5b1",
-       "type": "function",
-       "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[45]}"
-       }
-      },
-      {
-       "id": "call_94e382b6-e169-49a1-9ce5-05a1e702b573",
-       "type": "function",
-       "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[21]}"
-       }
-      },
-      {
-       "id": "call_de0fccfb-c762-478a-b3f1-f344f61f1c21",
-       "type": "function",
-       "function": {
-        "name": "view_colonies",
-        "arguments": "{\"numbers\":[204]}"
-       }
-      }
-     ],
-     "role": "assistant"
-    },
-    "logprobs": null
-   }
-  ],
-  "created": 1793823990,
-  "model": "muse-spark-1.3",
-  "service_tier": "default",
-  "object": "chat.completion",
-  "usage": {
-   "completion_tokens": 688,
-   "prompt_tokens": 25556,
-   "total_tokens": 26244,
-   "completion_tokens_details": {
-    "reasoning_tokens": 506
-   },
-   "prompt_tokens_details": {
-    "cached_tokens": 23921
-   }
-  }
- },
- {
-  "id": "chatcmpl-01a1a83e-05ab-756c-9d6e-05e5d886486f",
-  "choices": [
-   {
-    "finish_reason": "tool_calls",
-    "index": 0,
-    "message": {
-     "content": "Verified clean isolated colonies in close-up; I\u2019ll reject faint artifacts and finalize three picks.",
-     "refusal": null,
-     "tool_calls": [
-      {
-       "id": "call_baf7f3e0-7d89-4668-8063-7103840f3b2f",
+       "id": "call_9ae0fc2b-b82d-48ca-acc8-f21b091d21cd",
        "type": "function",
        "function": {
         "name": "reject_colonies",
-        "arguments": "{\"rejects\":[{\"number\":206,\"reason\":\"extremely faint haze with no solid dome, not a pickable colony\"},{\"number\":278,\"reason\":\"irregular translucent cluster, not one clean round dome\"},{\"number\":204,\"reason\":\"very faint diffuse spot without solid white dome\"}]}"
+        "arguments": "{\"rejects\":[{\"number\":306,\"reason\":\"at edge of dense crowded patch, not cleanly isolated\"}]}"
        }
       }
      ],
@@ -495,24 +303,144 @@
     "logprobs": null
    }
   ],
-  "created": 1793823999,
+  "created": 1793827156,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 864,
-   "prompt_tokens": 26435,
-   "total_tokens": 27299,
+   "completion_tokens": 2311,
+   "prompt_tokens": 24180,
+   "total_tokens": 26491,
    "completion_tokens_details": {
-    "reasoning_tokens": 718
+    "reasoning_tokens": 2210
    },
    "prompt_tokens_details": {
-    "cached_tokens": 23409
+    "cached_tokens": 22257
    }
   }
  },
  {
-  "id": "chatcmpl-01a1a83e-232b-7133-a48c-95236fbf4337",
+  "id": "chatcmpl-01a1a86e-8200-72e9-bb6d-69c776c41b08",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "The bottom sparse colonies look clean, so I'll reject the edge candidate and finalize my three picks.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_056ca8f6-6457-412b-8e93-5cb160d5406a",
+       "type": "function",
+       "function": {
+        "name": "reject_colonies",
+        "arguments": "{\"rejects\":[{\"number\":246,\"reason\":\"at extreme plate wall with rim glare risk, not safely isolated\"}]}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793827176,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 2073,
+   "prompt_tokens": 24333,
+   "total_tokens": 26406,
+   "completion_tokens_details": {
+    "reasoning_tokens": 1968
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a86e-e424-7667-a76b-2e9d904b912d",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "That large candidate looks like a bubble, so I'll get a closer view of the small isolated colonies to verify them.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_d0779f0b-6ad4-41dc-b11b-9e6f2096ae66",
+       "type": "function",
+       "function": {
+        "name": "view_colonies",
+        "arguments": "{\"numbers\":[10,104,105]}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793827202,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 2263,
+   "prompt_tokens": 24493,
+   "total_tokens": 26756,
+   "completion_tokens_details": {
+    "reasoning_tokens": 2172
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a86f-5503-7709-89a6-e103a9ecf50b",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "Close-ups confirm small white colonies; I'll reject the large bubble and verify my top candidates.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_be52b0a7-249f-4723-ba30-d3f3fd530476",
+       "type": "function",
+       "function": {
+        "name": "reject_colonies",
+        "arguments": "{\"rejects\":[{\"number\":301,\"reason\":\"large pale ring bubble, not a white dome colony\"}]}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793827230,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 2867,
+   "prompt_tokens": 25329,
+   "total_tokens": 28196,
+   "completion_tokens_details": {
+    "reasoning_tokens": 2766
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a86f-89d1-7351-ab60-2d1e97485eab",
   "choices": [
    {
     "finish_reason": "tool_calls",
@@ -522,11 +450,11 @@
      "refusal": null,
      "tool_calls": [
       {
-       "id": "call_01129023-87bd-4858-8bed-548cebeb4543",
+       "id": "call_7add91e9-86cf-4221-8302-8bfadf08a154",
        "type": "function",
        "function": {
         "name": "choose_colonies",
-        "arguments": "{\"picks\":[{\"number\":21,\"reason\":\"solid round white dome with clean agar around and 3.2mm to neighbour.\"},{\"number\":205,\"reason\":\"solid round white dome, well isolated with 4.7mm to neighbour.\"},{\"number\":45,\"reason\":\"small round white dot with clean agar and 4.0mm isolation.\"}]}"
+        "arguments": "{\"picks\":[{\"number\":115,\"reason\":\"Isolated bright white dome with wide clean agar around it in sparse zone.\"},{\"number\":108,\"reason\":\"Small distinct white dome well separated from neighbours in sparse middle zone.\"},{\"number\":10,\"reason\":\"Very isolated small white dome near the bottom edge with large clearance to neighbours.\"}]}"
        }
       }
      ],
@@ -535,19 +463,19 @@
     "logprobs": null
    }
   ],
-  "created": 1793824006,
+  "created": 1793827244,
   "model": "muse-spark-1.3",
   "service_tier": "default",
   "object": "chat.completion",
   "usage": {
-   "completion_tokens": 797,
-   "prompt_tokens": 26624,
-   "total_tokens": 27421,
+   "completion_tokens": 1378,
+   "prompt_tokens": 25504,
+   "total_tokens": 26882,
    "completion_tokens_details": {
-    "reasoning_tokens": 662
+    "reasoning_tokens": 1248
    },
    "prompt_tokens_details": {
-    "cached_tokens": 26353
+    "cached_tokens": 24305
    }
   }
  }
