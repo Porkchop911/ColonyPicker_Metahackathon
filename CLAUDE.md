@@ -38,7 +38,7 @@ Run everything from the repo root (paths like `evidence/tip/...` are relative).
 | `tools/test_well_servo.py` | offline replay test of the tip measurement on saved frames. Run after any detector change |
 | `tools/plate_rig.py` | camera poses + plate pose from the paper grid; `well("E12")` = well centre in sheet mm (z down, negative = up) |
 | `tools/well_reach.py` | shared pieces: `Servos` (robot I/O), `jgo` (safe moves), `Eyes` (cameras), `needle_ends`, `PARK` |
-| `tools/rig_io.py` | camera capture and the SSH servo bridge (robot `ubuntu@192.168.0.223`) |
+| `tools/rig_io.py` | camera capture and the SSH servo bridge (robot `ubuntu@<ROBOT_IP>`) |
 | `tools/arm_calibrate.py` | `cameras()` (lamp + camera open + pose check), `in_well`; the rest is older work |
 | `tools/pose_gui.py` | small window to set servos 1-4 by hand, read back, save poses (for teaching) |
 | `evidence/tip/` | caches (`*_pose_cache.json`), state (`well_servo_state.json`), results (`well_servo.json`), logs (`well_servo_run*.log`), frames (`well2_<tag>_<n>_<label>.raw.{top,side}.jpg`; `_miss` = not measured) |
