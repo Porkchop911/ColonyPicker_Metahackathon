@@ -18,6 +18,10 @@ pred = sam_detect.load()
 open(f'{S}/sam_ready', 'w').write(str(os.getpid()))
 print('SAM 3.1 loaded, ready', flush=True)
 while True:
+    try:
+        cd.answer_rerun(pred, S)
+    except Exception as e:  # colony_agent.on_call times out and tells Spark
+        print('SAM re-run failed:', e, flush=True)
     if os.path.exists(f'{S}/sam_request'):
         os.remove(f'{S}/sam_request')
         t0 = time.time()

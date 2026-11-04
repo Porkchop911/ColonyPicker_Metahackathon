@@ -1,0 +1,82 @@
+[
+ {
+  "id": "chatcmpl-01a1a80f-e739-754c-b19a-c02496bae230",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "First I\u2019ll image the whole plate to determine if it holds isolated colonies or must be refused.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_b4955a36-2ee8-44b6-b397-c80f8cf165fc",
+       "type": "function",
+       "function": {
+        "name": "view_dish",
+        "arguments": "{}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820976,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 80,
+   "prompt_tokens": 1450,
+   "total_tokens": 1530,
+   "completion_tokens_details": {
+    "reasoning_tokens": 15
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a80f-f6ad-722d-bad6-62d7543faf9c",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": null,
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_15e51494-7aef-44ca-8558-7563bd1ce44d",
+       "type": "function",
+       "function": {
+        "name": "refuse_plate",
+        "arguments": "{\"reason\":\"Plate shows confluent lawn / crowded mottled sheet of growth with no distinct isolated round domes and no clean agar between colonies; bumps in lawn would not yield pure culture.\"}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820980,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 548,
+   "prompt_tokens": 2846,
+   "total_tokens": 3394,
+   "completion_tokens_details": {
+    "reasoning_tokens": 463
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ }
+]

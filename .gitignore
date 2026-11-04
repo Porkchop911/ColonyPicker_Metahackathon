@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 config/hue.local.json
+config/meta.local.json
 evidence/descend/stop.flag
 evidence/descend/side_aim_*.png
 evidence/descend/lamps.json
@@ -20,3 +21,5 @@ evidence/tip/rec_stop
 evidence/tip/*.mp4
 evidence/tip/phone recordings/
 evidence/tip/agar_mm.txt
+evidence/offline_result_*.jpg
+evidence/colony_agent.json

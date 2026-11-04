@@ -2,7 +2,7 @@
 
 A robot arm with a steel needle picks microbial colonies from an agar dish, on its own. **Meta SAM 3.1** finds the colonies on a live
 overhead camera image. The arm then moves the needle into a colony, into its own sample well, into a disinfectant well and into a
-rinse well, while a browser page shows each step. SAM 3.1 is the only AI model the project calls at runtime.
+rinse well, while a browser page shows each step. Meta models are the only AI models it calls at runtime: SAM 3.1 marks the colonies, and Muse Spark can act as its critic.
 
 > Agents and new contributors: read `CLAUDE.md` first. The arm is real, and its safety rules there are not optional.
 
@@ -22,6 +22,13 @@ The working system is shown in the demo video.
 | Meta model | Where it runs | What it does |
 |---|---|---|
 | SAM 3.1 (`facebookresearch/sam3`, `facebook/sam3.1` weights) | Locally on the PC GPU (RTX 3090), kept loaded by `tools/sam_server.py` | Finds the dish and each colony, with a confidence score |
+| Muse Spark (`muse-spark-1.3`, Meta Model API) | Over the API, from `tools/colony_agent.py` | Critic of SAM in a tool-calling loop: refuses a lawn or unusable plate, strikes marks that are not one clean colony, chooses what the arm picks |
+
+SAM finds where things are, to the pixel, but it also rings glints, smears and bumps in a lawn. Muse Spark looks at the whole plate and judges what those marks are. It never gets coordinates or motion: it returns mark numbers, and the arm goes to SAM's position for each. The code rejects a choice too close to the rim or a neighbour, one it hasn't looked at, or one it struck, and the model must choose again. Spark can also send SAM back with another prompt from a fixed list, at most 3 times; the code enforces that cap. It didn't use this on any of the 14 saved views, so re-runs are tested only with a scripted model.
+
+On 14 saved dish views, by the author's labels, it picked on the 5 clean ones and refused the 9 others. A plain "3 largest marks" rule would have sent the arm into 7 of those 9. The views are not 14 separate plates: some are the same plate re-shot or under other light.
+
+On the page this is the **Run: Muse Spark chooses** button. A refusal ends the run with no pick; if the API fails, the operator chooses. The recorded robot demo used the operator's choice; the critic loop has only been run on saved photos.
 
 Everything else is classic code, with no other AI model: OpenCV image processing, NumPy, arm kinematics and a Hue lamp API.
 The tip tracking is image differencing, not a learned model.
@@ -39,6 +46,21 @@ Well positions are calibrated to one physical setup and must be redone if the pl
 [docs/colony_demo_writeup_2026-11-04.md](docs/colony_demo_writeup_2026-11-04.md).
 
 ## Run it
+
+### Offline demo, no robot
+
+This runs the Muse Spark critic on 20 saved plates with their saved SAM 3.1 detections: 14 dish views from the rig and 6 phone photos of other plates, whose mm scale is estimated from the plate type. It needs no GPU, robot or camera.
+
+On Windows, double-click `start_offline_demo.bat`. It opens the demo page without the robot. Pick a dish photo and press **Start**, and the critic runs in front of you: live with `MODEL_API_KEY`, otherwise a recorded run. Elsewhere, or for the terminal version:
+
+```bash
+pip install opencv-python numpy
+python tools/offline_page.py                          # the page
+python tools/offline_demo.py 1 --replay               # a recorded run, no key needed: 1 clean plate, 4 lawn, 1-20 all work
+MODEL_API_KEY=... python tools/offline_demo.py 1      # the same loop live, key from dev.meta.ai
+```
+
+It prints each tool call and reason, and writes `evidence/offline_result_1.jpg`: grey rings for SAM's marks, red crosses for marks the critic struck, yellow numbers for its picks in order. Live runs can choose differently.
 
 ### SAM 3.1 only, no robot
 

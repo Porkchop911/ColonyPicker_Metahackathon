@@ -1,0 +1,82 @@
+[
+ {
+  "id": "chatcmpl-01a1a80f-3f7d-771c-af8b-14816d1f4acc",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "Starting plate review \u2014 inspecting the whole dish first.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_999bb957-7f6c-4deb-92d7-ad144727d894",
+       "type": "function",
+       "function": {
+        "name": "view_dish",
+        "arguments": "{}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820933,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 80,
+   "prompt_tokens": 1450,
+   "total_tokens": 1530,
+   "completion_tokens_details": {
+    "reasoning_tokens": 24
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a80f-4c80-73b4-bc06-ab842564dec3",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": null,
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_64a951ab-bce8-49ea-af61-e84ca6c135ba",
+       "type": "function",
+       "function": {
+        "name": "refuse_plate",
+        "arguments": "{\"reason\":\"No distinct isolated colonies visible; entire surface is a hazy mottled brown sheet with no clean agar between domes, consistent with lawn/confluent growth or no clear colonies - refuse when in doubt.\"}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820937,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 346,
+   "prompt_tokens": 2837,
+   "total_tokens": 3183,
+   "completion_tokens_details": {
+    "reasoning_tokens": 256
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ }
+]

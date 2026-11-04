@@ -1,0 +1,82 @@
+[
+ {
+  "id": "chatcmpl-01a1a80f-2920-7603-aabc-5fef02863eb0",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "Starting plate review \u2014 viewing the whole dish first.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_e5f2c615-86ce-43e9-b23f-63d5fc629aba",
+       "type": "function",
+       "function": {
+        "name": "view_dish",
+        "arguments": "{}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820928,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 67,
+   "prompt_tokens": 1450,
+   "total_tokens": 1517,
+   "completion_tokens_details": {
+    "reasoning_tokens": 11
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a80f-384b-76e9-9b17-3383289696ba",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": null,
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_b6f5f361-17df-4574-aa2b-80c5e718a61d",
+       "type": "function",
+       "function": {
+        "name": "refuse_plate",
+        "arguments": "{\"reason\":\"Whole plate is covered by a hazy mottled confluent lawn/film with no distinct isolated round domes separated by clean agar; visible bumps are in lawn, not pure colonies.\"}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820932,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 364,
+   "prompt_tokens": 2837,
+   "total_tokens": 3201,
+   "completion_tokens_details": {
+    "reasoning_tokens": 277
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ }
+]

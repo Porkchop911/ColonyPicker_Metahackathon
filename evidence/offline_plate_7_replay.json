@@ -1,0 +1,82 @@
+[
+ {
+  "id": "chatcmpl-01a1a80f-697b-71a4-bbb4-37a18d595aec",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "First I'll survey the whole plate to judge colony quality.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_84b94e66-8b1a-4abc-9b00-2605104e1dc1",
+       "type": "function",
+       "function": {
+        "name": "view_dish",
+        "arguments": "{}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820944,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 72,
+   "prompt_tokens": 1450,
+   "total_tokens": 1522,
+   "completion_tokens_details": {
+    "reasoning_tokens": 15
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a80f-780d-7630-a771-481c4f030e76",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": null,
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_55cd5073-6664-4f83-ada4-4d6085e28303",
+       "type": "function",
+       "function": {
+        "name": "refuse_plate",
+        "arguments": "{\"reason\":\"Plate shows no distinct round colonies with clean agar between them, only a uniform brown surface without clear isolated domes; no pure-culture pick possible.\"}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820948,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 286,
+   "prompt_tokens": 2838,
+   "total_tokens": 3124,
+   "completion_tokens_details": {
+    "reasoning_tokens": 206
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ }
+]

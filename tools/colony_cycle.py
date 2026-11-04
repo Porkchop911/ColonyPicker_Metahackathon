@@ -1,5 +1,6 @@
 """Demo: every colony on the dish into its own target well, each followed by the disinfect and the rinse well.
-usage: <venv python> tools/colony_cycle.py [--dry] [--agar MM] [--again] [--max N] [--dwell W=s,W=s] [--no-view]
+usage: <venv python> tools/colony_cycle.py [--dry] [--agar MM] [--again] [--max N] [--dwell W=s,W=s] [--no-view] [--agent]
+  --agent  Muse Spark chooses the colonies (tools/colony_agent.py) instead of the operator
   --dry    background + SAM + well assignment + status picture only, no picks or wells
   --agar   agar height (mm) when the side view cannot measure it (evening light); --again: also picked colonies
 
@@ -157,14 +158,28 @@ for r in range(2):  # two retries (side readings lost at B12 in dimmer light, 14
     got = tour([DIS, RINSE] if DIS not in got else [RINSE], f'start_r{r}') | ({DIS} if DIS in got else set())
 if DIS not in got or RINSE not in got:
     say(f'{DIS}/{RINSE} not entered at the start: stop'); sys.exit(1)
-say('waiting for the detection choice on the demo page')
-while not os.path.exists(CHOICE):  # the user looks at the three and clicks one; Stop ends the run here
-    if os.path.exists(STOP_FILE):
-        say('stopped before picking'); sys.exit()
-    time.sleep(0.5)
-pick = json.load(open(CHOICE))['variant']
 skip = json.load(open(f'{S}/colony_skip.json')) if os.path.exists(f'{S}/colony_skip.json') else []  # hand-kept: left out of the run, still shown on the page
-cols = [np.array(p) for p in choices[pick] if not any(np.linalg.norm(np.array(p) - np.array(q)) < 15 for q in skip)][:int(arg('--max', len(TARGETS)))]
+cols = None
+if '--agent' in sys.argv:  # Muse Spark chooses; if the API fails the operator chooses on the page, the run goes on
+    import colony_agent
+    say('Muse Spark is choosing the colonies')
+    try:
+        cols = [np.array(p) for p in colony_agent.decide(bg, variants, skip + ([] if '--again' in sys.argv else picked), DISH_C, min(int(arg('--max', len(TARGETS))), len(TARGETS)), say, sam=colony_agent.on_call)]
+        pick = 'Muse Spark'
+    except colony_agent.Refused as e:  # the critic's no is final: no operator fallback on a plate it refused
+        say(f'Muse Spark refused this plate: {e}')
+        status_picture(bg, [], {}, 'Muse Spark refused this plate: nothing picked')
+        sys.exit()
+    except Exception as e:
+        say(f'Muse Spark did not decide ({e}): choose on the page')
+if cols is None:
+    say('waiting for the detection choice on the demo page')
+    while not os.path.exists(CHOICE):  # the user looks at the three and clicks one; Stop ends the run here
+        if os.path.exists(STOP_FILE):
+            say('stopped before picking'); sys.exit()
+        time.sleep(0.5)
+    pick = json.load(open(CHOICE))['variant']
+    cols = [np.array(p) for p in choices[pick] if not any(np.linalg.norm(np.array(p) - np.array(q)) < 15 for q in skip)][:int(arg('--max', len(TARGETS)))]
 say(f'using the {pick} detection: {len(cols)} colonies')
 jobs = [{'px': p, 'well': w, 'state': 'todo'} for p, w in zip(cols, TARGETS)]
 wells = {DIS: 'disinfect', RINSE: 'rinse', **{j['well']: 'todo' for j in jobs}}

@@ -1,0 +1,82 @@
+[
+ {
+  "id": "chatcmpl-01a1a80f-9f00-7394-ac6b-b8d0e1cc4325",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "Starting plate review \u2014 inspecting the dish for isolated colonies.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_ecc19b5d-a410-42d9-9d5f-fd46e1f2079c",
+       "type": "function",
+       "function": {
+        "name": "view_dish",
+        "arguments": "{}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820958,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 67,
+   "prompt_tokens": 1450,
+   "total_tokens": 1517,
+   "completion_tokens_details": {
+    "reasoning_tokens": 10
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a80f-b818-77ba-9981-10ef7dccb150",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": null,
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_ff29ad2b-c648-4a70-a536-2a821330602b",
+       "type": "function",
+       "function": {
+        "name": "refuse_plate",
+        "arguments": "{\"reason\":\"Plate shows dense crowded tiny specks covering entire surface with no distinct isolated round domes separated by clean agar; agar between colonies mostly hidden, consistent with confluent/crowded growth unsuitable for pure picks\"}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820964,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 637,
+   "prompt_tokens": 2838,
+   "total_tokens": 3475,
+   "completion_tokens_details": {
+    "reasoning_tokens": 546
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ }
+]

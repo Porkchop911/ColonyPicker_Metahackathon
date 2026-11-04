@@ -147,6 +147,7 @@ ACTIONS = {
     'park': lambda: run(['tools/bg_refresh.py', '--no-plate'], 'park'),
     'dry': lambda: (fresh(), run(['tools/colony_cycle.py', '--dry', '--no-view'], 'dry run')),
     'run': lambda: (fresh(), run(['tools/colony_cycle.py', '--no-view', '--max', '3', '--no-start-dip', '--blind-wells'], 'demo')),  # three colonies, C10 C11 C12 (user, 11-04)
+    'agent': lambda: (fresh(), run(['tools/colony_cycle.py', '--no-view', '--max', '3', '--no-start-dip', '--blind-wells', '--agent'], 'demo')),
     'record': record,
     'stop': lambda: (open(STOP, 'w').close(), log.append('-- stop requested: the demo ends after this colony')),
     'abort': abort,
@@ -235,89 +236,7 @@ def dish(variant=None):
     return crop
 
 
-PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><title>Colony picker</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-:root{--bg:#0d0f14;--panel:#151922;--line:#252b38;--text:#eef0f4;--dim:#8a93a8;--accent:#4f8cff;--ok:#46d27f;--now:#ffd400;--bad:#ff4d5e;--dis:#3d7bff;--rin:#3fd0ff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
-header{display:flex;align-items:center;gap:14px;padding:14px 24px;border-bottom:1px solid var(--line)}
-h1{font-size:19px;margin:0;font-weight:650}.pill{padding:4px 11px;border-radius:999px;font-size:12px;background:#1e2330;color:var(--dim)}
-.pill.run{background:rgba(79,140,255,.16);color:var(--accent)}
-main{display:grid;grid-template-columns:1.55fr 1fr;gap:18px;padding:18px 24px;align-items:start}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
-.card h2{font-size:12px;text-transform:uppercase;letter-spacing:1.1px;color:var(--dim);margin:0 0 12px;font-weight:650}
-img{width:100%;border-radius:12px;display:block;background:#090b0f}
-.line{margin-top:12px;font-size:17px;font-weight:600}
-.btns{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-button{border:1px solid var(--line);background:#1d2230;color:var(--text);border-radius:11px;padding:13px 10px;font:600 14px "Segoe UI",sans-serif;cursor:pointer;transition:.15s}
-button:hover{background:#252b3b}button.primary{background:var(--accent);border-color:var(--accent)}button.primary:hover{filter:brightness(1.1)}
-button.abort{grid-column:1/-1;background:var(--bad);border-color:var(--bad);font-size:17px;padding:17px;letter-spacing:1px}
-.plate{display:grid;grid-template-columns:24px repeat(8,1fr);gap:5px;margin-top:4px;max-width:420px}
-.plate .h{font-size:11px;color:var(--dim);text-align:center;align-self:center}
-.w{aspect-ratio:1;border-radius:50%;border:2px solid #2c3343;background:#1a1f2b;display:flex;align-items:center;justify-content:center;font-size:10px;color:#5d6578}
-.w.t{border-color:#e8ebf2;color:#e8ebf2}.w.now{border-color:var(--now);background:rgba(255,212,0,.22);color:var(--now);box-shadow:0 0 0 3px rgba(255,212,0,.25)}
-.w.done{border-color:var(--ok);background:rgba(70,210,127,.25);color:var(--ok)}.w.failed{border-color:var(--bad);color:var(--bad)}
-.w.next{border-color:var(--rin);border-style:dashed;color:var(--rin)}.w.dis{background:var(--dis);border-color:var(--dis);color:#fff}.w.rin{background:var(--rin);border-color:var(--rin);color:#04202b}
-.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--dim);margin-top:12px}.dot{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:5px;vertical-align:-1px;border:2px solid}
-.cams{display:grid;grid-template-columns:1.6fr 1fr;gap:12px}.cams.hidden{display:none}.cap{font-size:12px;color:var(--dim);margin:6px 2px}.agar{margin-top:14px;display:grid;gap:4px}.agar input{width:90px;margin-left:8px;background:#1d2230;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font:600 14px 'Segoe UI',sans-serif}
-pre{margin:0;max-height:240px;overflow:auto;font:12px/1.4 Consolas,monospace;color:#c4cad6;white-space:pre-wrap}
-.row{display:flex;justify-content:space-between;align-items:center}.toggle{font-size:12px;color:var(--accent);cursor:pointer;user-select:none}
-.stack{display:grid;gap:18px}.choices{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.choice{background:#10131a;border:1px solid var(--line);border-radius:12px;padding:10px}.choice h3{margin:0 0 8px;font-size:15px}.choice.picked{border:2px solid var(--now);box-shadow:0 0 0 3px rgba(255,212,0,.2)}.choice.picked button{background:var(--now);border-color:var(--now);color:#1a1500}.choice button{width:100%;margin-top:8px}.full{grid-column:1/-1}@media(max-width:1000px){main{grid-template-columns:1fr}}
-/* one screen when maximised (user, 11-03): dish | cameras + log | controls + plate */
-html,body{height:100%}body{display:flex;flex-direction:column;overflow:hidden}header{padding:10px 20px}
-main{flex:1;min-height:0;grid-template-columns:1.25fr 1fr .7fr;grid-template-rows:minmax(0,1fr);gap:14px;padding:12px 18px;align-items:stretch}
-.card{padding:12px}.c1{grid-column:1;grid-row:1;display:flex;flex-direction:column;min-height:0}
-#dish{flex:1;min-height:0;object-fit:contain}.choices img{max-height:calc(100vh - 340px);object-fit:contain}
-.c2{grid-column:2;grid-row:1;display:flex;flex-direction:column;gap:14px;min-height:0}
-.cams{grid-template-columns:1fr;gap:6px}.cams img{max-height:calc((100vh - 330px) / 2);object-fit:contain}.cap{margin:3px 2px}
-.logc{flex:1;min-height:90px;display:flex;flex-direction:column}pre{flex:1;min-height:0;max-height:none}
-.stack{grid-column:3;grid-row:1;align-content:start;gap:14px;overflow:auto;min-height:0}.plate{max-width:min(270px,calc((100vh - 480px) * .62 + 30px));gap:4px}
-button{padding:11px 8px}button.abort{padding:14px}
-@media(max-width:1000px),(max-height:620px){body{overflow:auto;height:auto}main{grid-template-columns:1fr;grid-template-rows:none}.c1,.c2,.stack{grid-column:auto;grid-row:auto}#dish{flex:none}}
-</style></head><body>
-<header><h1>Colony picker</h1><span id="pill" class="pill">idle</span><span id="when" class="pill"></span></header>
-<main>
-<section class="card c1"><h2>Colonies found by SAM 3.1</h2>
-<div id="choices" class="choices" style="display:none"></div><img id="dish" alt="dish">
-<div class="legend"><span><i class="dot" style="border-color:#fff"></i>waiting</span><span><i class="dot" style="border-color:var(--now)"></i>picking now</span><span><i class="dot" style="border-color:var(--ok)"></i>done</span><span><i class="dot" style="border-color:var(--bad)"></i>failed</span></div>
-<div class="line" id="line">-</div></section>
-<div class="stack">
-<section class="card"><h2>Control</h2><div class="btns">
-<button onclick="act('check')">Check arm</button><button onclick="act('park')">Park</button><button onclick="act('dry')">Dry run</button>
-<button class="primary" onclick="act('run')">Run demo</button><button onclick="act('stop')" style="grid-column:span 2">Stop after this colony</button><button onclick="act('record')">Record on / off</button>
-<button class="abort" onclick="act('abort')">ABORT</button></div>
-<div class="agar" style="display:none"><label>Agar surface from the plate bottom (mm): <input id="agar" type="number" step="0.1" min="3" max="12" placeholder="auto" onchange="setAgar(this.value)"></label><span class="cap">as measured, nothing added; empty = side camera</span></div></section>
-<section class="card"><h2>Plate</h2><div class="plate" id="plate"></div>
-<div class="legend"><span><i class="dot" style="background:var(--dis);border-color:var(--dis)"></i>disinfect</span><span><i class="dot" style="background:var(--rin);border-color:var(--rin)"></i>rinse</span><span><i class="dot" style="border-color:var(--now)"></i>target now</span><span><i class="dot" style="border-color:var(--rin);border-style:dashed"></i>next</span><span><i class="dot" style="border-color:var(--ok)"></i>done</span></div></section>
-</div>
-<div class="c2"><section class="card"><div class="row"><h2>Cameras (live)</h2><span class="toggle" onclick="cams()">show / hide</span></div>
-<div id="cams" class="cams"><div><img id="top" alt="overhead"><div class="cap">Overhead: yellow = target colony, green = target well, blue = next well</div></div><div><img id="side" alt="side"><div class="cap">Side</div></div></div></section>
-<section class="card logc"><h2>Log</h2><pre id="log"></pre></section></div>
-</main>
-<script>
-const $=id=>document.getElementById(id);let showCams=true;try{showCams=localStorage.getItem('cams')!=='0'}catch(e){}
-function cams(){showCams=!showCams;try{localStorage.setItem('cams',showCams?'1':'0')}catch(e){};$('cams').classList.toggle('hidden',!showCams)}
-$('cams').classList.toggle('hidden',!showCams);
-async function setAgar(v){await fetch('/agar/'+(v||'auto'),{method:'POST'});poll()}
-async function act(a){await fetch('/action/'+a,{method:'POST'});poll()}
-function plate(s){const d=s.demo||{},W=s.wells||{},st={};(d.colonies||[]).forEach(c=>st[c.well]=c.state);(W.targets||[]).forEach(w=>{if(!(w in st))st[w]='t'});
-let h='<div></div>';for(const r of 'ABCDEFGH')h+='<div class="h">'+r+'</div>';
-for(let c=12;c>=1;c--){h+='<div class="h">'+c+'</div>';for(const r of 'ABCDEFGH'){const w=r+c;let k='';
-if(w===W.disinfect)k='dis';else if(w===W.rinse)k='rin';else if(w===d.target_well)k='now';else if(st[w]==='done')k='done';else if(st[w]==='failed')k='failed';else if(w===d.next_well)k='next';else if(st[w])k='t';
-h+='<div class="w '+k+'" title="'+w+'">'+(k?w:'')+'</div>'}}$('plate').innerHTML=h}
-let agarShown=false;
-async function poll(){try{const s=await (await fetch('/state')).json();if(!agarShown){$('agar').value=s.agar||'';agarShown=true}$('pill').textContent=s.running?('running: '+s.title):('idle'+(s.exit!==null?' (last exit '+s.exit+')':''));
-$('pill').className='pill'+(s.running?' run':'');const d=s.demo;$('line').textContent=d?d.line:'Press Dry run or Run demo: SAM 3.1 detects the colonies on a fresh frame.';$('when').textContent=d&&d.when?('updated '+d.when):'';plate(s);choices(d);
-const L=$('log');const atEnd=L.scrollTop+L.clientHeight>=L.scrollHeight-20;L.textContent=s.log.join('\n');if(atEnd)L.scrollTop=L.scrollHeight}catch(e){$('pill').textContent='server not reachable'}}
-let shown='';function choices(d){const C=d&&d.choices&&!(d.colonies||[]).length?d.choices:null;const el=$('choices');
-if(!C){el.style.display='none';$('dish').style.display='';shown='';return}
-const key=JSON.stringify(C);if(key===shown)return;shown=key;el.style.display='grid';$('dish').style.display='none';
-el.innerHTML=['strict','normal','loose'].map(n=>'<div class="choice"><h3>'+n+' &middot; '+C[n].length+' colonies</h3><img src="/img/choice-'+n+'?'+Date.now()+'"><button class="primary" data-v="'+n+'" onclick="choose(this.dataset.v)">Use this</button></div>').join('')}
-async function choose(n){await fetch('/choose/'+n,{method:'POST'});document.querySelectorAll('.choice').forEach(c=>{const on=c.querySelector('button').dataset.v===n;
-c.classList.toggle('picked',on);c.querySelector('button').textContent=on?'Chosen':'Use this'});poll()}
-function imgs(){const t=Date.now();$('dish').src='/img/dish?'+t;if(showCams){$('top').src='/img/top?'+t;$('side').src='/img/side?'+t}}
-setInterval(poll,1000);setInterval(imgs,500);poll();imgs();
-</script></body></html>"""
+PAGE = open('tools/demo_page.html', encoding='utf-8').read()  # shared with tools/offline_page.py
 
 
 class H(BaseHTTPRequestHandler):
@@ -397,6 +316,10 @@ def sam_worker():
     open(f'{S}/sam_ready', 'w').write(str(os.getpid()))
     log.append('-- SAM 3.1 loaded, ready')
     while True:
+        try:
+            cd.answer_rerun(pred, S)
+        except Exception as e:
+            log.append(f'-- SAM re-run failed: {e}')
         if os.path.exists(f'{S}/sam_request'):
             os.remove(f'{S}/sam_request')
             try:

@@ -23,6 +23,7 @@ seams are merged by centroid distance.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -153,6 +154,29 @@ def variant_picks(predictor, bg_top: np.ndarray) -> dict:
     return {name: [{'px': [float(v) for v in c[0]], 'd_mm': round(c[1], 1), 'score': round(c[2], 2)}
                    for c in out if c[1] >= d_min and c[2] >= sc_min and contrast(c[0]) > ct_min]
             for name, (sc_min, d_min, ct_min) in VARIANTS.items()}
+
+
+def prompted(predictor, frame: np.ndarray, prompt: str) -> list[dict]:
+    """SAM again with one text prompt and a low threshold: Muse Spark's re-run. No gates: Spark judges these marks itself."""
+    global SMALL, LARGE
+    keep = SMALL, LARGE
+    SMALL, LARGE = prompt, prompt
+    try:
+        _, cols = detect_colonies(predictor, frame, threshold=0.05)
+    finally:
+        SMALL, LARGE = keep
+    return [{'px': [float(v) for v in c['centroid']], 'd_mm': round(float(c['d_mm']), 1), 'score': round(float(c['score']), 2)} for c in cols]
+
+
+def answer_rerun(predictor, s: str) -> None:
+    """On call: a prompt in <s>/sam_rerun_request is answered in <s>/sam_rerun.json, on the frame in st2_top.jpg."""
+    path = f'{s}/sam_rerun_request'
+    if Path(path).exists():
+        prompt = Path(path).read_text().strip()
+        Path(path).unlink()
+        marks = prompted(predictor, cv2.imread(f'{s}/st2_top.jpg'), prompt)
+        Path(f'{s}/sam_rerun.tmp').write_text(json.dumps({'prompt': prompt, 'marks': marks}))
+        Path(f'{s}/sam_rerun.tmp').replace(f'{s}/sam_rerun.json')
 
 
 def main() -> None:

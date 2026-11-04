@@ -1,0 +1,82 @@
+[
+ {
+  "id": "chatcmpl-01a1a80f-d1cf-77ff-ae82-96a07e672863",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "I'll examine the whole plate first to determine if it holds distinct colonies.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_8ced195c-9eb7-4d7a-b138-3154a0166572",
+       "type": "function",
+       "function": {
+        "name": "view_dish",
+        "arguments": "{}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820971,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 106,
+   "prompt_tokens": 1450,
+   "total_tokens": 1556,
+   "completion_tokens_details": {
+    "reasoning_tokens": 46
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a80f-e161-7671-8133-283fd4215e38",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": null,
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_c6ccf5d8-2c2b-4e95-9f8b-40df9c2d4126",
+       "type": "function",
+       "function": {
+        "name": "refuse_plate",
+        "arguments": "{\"reason\":\"Plate shows confluent mottled lawn with hundreds of crowded tiny growths and no distinct round domes separated by clean agar; agar between growths is mostly hidden, so no pure isolated colony can be picked.\"}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820975,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 617,
+   "prompt_tokens": 2841,
+   "total_tokens": 3458,
+   "completion_tokens_details": {
+    "reasoning_tokens": 525
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ }
+]

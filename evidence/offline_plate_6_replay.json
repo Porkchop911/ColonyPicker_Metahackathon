@@ -1,0 +1,82 @@
+[
+ {
+  "id": "chatcmpl-01a1a80f-53a7-745c-8b35-f48e1255d717",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": "I'll start by examining the whole plate to determine if it contains distinct, isolated colonies.",
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_1a8e3459-c431-4eaa-851d-c9ca35b34f59",
+       "type": "function",
+       "function": {
+        "name": "view_dish",
+        "arguments": "{}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820939,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 118,
+   "prompt_tokens": 1450,
+   "total_tokens": 1568,
+   "completion_tokens_details": {
+    "reasoning_tokens": 55
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ },
+ {
+  "id": "chatcmpl-01a1a80f-6480-723f-8eeb-114e2292cd6c",
+  "choices": [
+   {
+    "finish_reason": "tool_calls",
+    "index": 0,
+    "message": {
+     "content": null,
+     "refusal": null,
+     "tool_calls": [
+      {
+       "id": "call_600d0764-8354-43a0-8042-3be69721554d",
+       "type": "function",
+       "function": {
+        "name": "refuse_plate",
+        "arguments": "{\"reason\":\"Plate shows no clear separate colonies \u2014 dark hazy/mottled surface with no distinct round domes and no clean agar between them, so no pure pick is possible.\"}"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    "logprobs": null
+   }
+  ],
+  "created": 1793820943,
+  "model": "muse-spark-1.3",
+  "service_tier": "default",
+  "object": "chat.completion",
+  "usage": {
+   "completion_tokens": 659,
+   "prompt_tokens": 2844,
+   "total_tokens": 3503,
+   "completion_tokens_details": {
+    "reasoning_tokens": 575
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 1393
+   }
+  }
+ }
+]
